@@ -1,0 +1,82 @@
+services:
+  backend:
+    image: ${BACKEND_IMAGE_NAME:-backend:native}
+    platform: linux/amd64
+    pull_policy: never
+    container_name: involution-hell-backend
+    restart: always
+    env_file:
+      - .env
+    environment:
+      SERVER_PORT: ${SERVER_PORT:-8080}
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-default}
+      SPRING_APPLICATION_NAME: ${SPRING_APPLICATION_NAME:-backend}
+      SA_TOKEN_TOKEN_NAME: ${SA_TOKEN_TOKEN_NAME:-satoken}
+      SA_TOKEN_TIMEOUT: ${SA_TOKEN_TIMEOUT:-2592000}
+      SA_TOKEN_ACTIVE_TIMEOUT: ${SA_TOKEN_ACTIVE_TIMEOUT:-7200}
+      SA_TOKEN_IS_CONCURRENT: ${SA_TOKEN_IS_CONCURRENT:-true}
+      SA_TOKEN_IS_SHARE: ${SA_TOKEN_IS_SHARE:-false}
+      SA_TOKEN_TOKEN_STYLE: ${SA_TOKEN_TOKEN_STYLE:-random-64}
+      SA_TOKEN_IS_LOG: ${SA_TOKEN_IS_LOG:-true}
+      MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: ${MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE:-health}
+      MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED: ${MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED:-true}
+      MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: ${MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS:-never}
+    expose:
+      - "${SERVER_PORT:-8080}"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS \"http://127.0.0.1:${SERVER_PORT:-8080}/actuator/health\" | grep '\"status\":\"UP\"' >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - InvolutionHell-net
+    depends_on:
+      caddy:
+        condition: service_started
+      redis:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    container_name: involution-redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --appendonly yes
+      --requirepass ${REDIS_PASSWORD:-change_me} /usr/local/redis/redis.conf
+    volumes:
+      - /home/ubuntu/involution-hell/redis7-data:/data
+      - /home/ubuntu/involution-hell/redis7-conf/redos.conf:/usr/local/etc/redis/redis.conf
+    ports:
+      - "6382:6379"
+      - "16382:16379"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a ${REDIS_PASSWORD:-change_me} ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - InvolutionHell-net
+
+  caddy:
+    build:
+      context: .
+    image: caddy:2.10-alpine
+    container_name: involution-hell-caddy
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "${CADDY_HTTP_PORT:-80}:80"
+      - "${CADDY_HTTPS_PORT:-443}:443"
+    volumes:
+      - /home/ubuntu/involution-hell/caddy-data:/data
+      - /home/ubuntu/involution-hell/caddy-conf:/config
+      - /home/ubuntu/involution-hell/caddy-conf/Caddyfile:/etc/caddy/Caddyfile:ro
+    networks:
+      - InvolutionHell-net
+
+networks:
+  InvolutionHell-net:
+    driver: bridge
