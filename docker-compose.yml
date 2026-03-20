@@ -1,8 +1,7 @@
 services:
   backend:
-    image: ${BACKEND_IMAGE_NAME:-ghcr.io/involutionhell/involutionhell-backend:latest}
-    platform: linux/arm64
-    pull_policy: always
+    image: involutionhell-backend:latest
+    pull_policy: never
     container_name: involution-hell-backend
     restart: always
     env_file:
