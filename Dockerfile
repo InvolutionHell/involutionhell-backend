@@ -11,8 +11,9 @@ RUN chmod +x mvnw && ./mvnw dependency:go-offline -q
 
 # 复制源码并编译 Native Image
 COPY src ./src
-# native:compile 会自动触发 Java 编译阶段并识别 Spring Boot 主类
-RUN ./mvnw -DskipTests native:compile -q
+# -Pnative package 会触发 Spring Boot AOT 处理（process-aot）再进行 native-image 编译
+# 直接调用 native:compile / native:compile-no-fork 会跳过 AOT 阶段，导致找不到主类
+RUN ./mvnw -DskipTests -Pnative package -q
 
 # 第二阶段：最小化运行镜像
 FROM ubuntu:24.04
