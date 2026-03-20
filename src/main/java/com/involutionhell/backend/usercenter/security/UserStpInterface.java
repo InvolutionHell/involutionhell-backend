@@ -2,19 +2,19 @@ package com.involutionhell.backend.usercenter.security;
 
 import cn.dev33.satoken.stp.StpInterface;
 import com.involutionhell.backend.usercenter.model.UserAccount;
-import com.involutionhell.backend.usercenter.repository.InMemoryUserAccountRepository;
+import com.involutionhell.backend.usercenter.repository.UserAccountRepository;
 import java.util.List;
 import org.springframework.stereotype.Component;
 
 @Component
 public class UserStpInterface implements StpInterface {
 
-    private final InMemoryUserAccountRepository userAccountRepository;
+    private final UserAccountRepository userAccountRepository;
 
     /**
      * 创建 Sa-Token 权限桥接组件。
      */
-    public UserStpInterface(InMemoryUserAccountRepository userAccountRepository) {
+    public UserStpInterface(UserAccountRepository userAccountRepository) {
         this.userAccountRepository = userAccountRepository;
     }
 

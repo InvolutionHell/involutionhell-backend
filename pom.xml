@@ -56,6 +56,12 @@
 			<artifactId>spring-boot-starter-actuator</artifactId>
 		</dependency>
 
+		<!-- jdbc -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-jdbc</artifactId>
+		</dependency>
+
 		<!-- sa-token for spring boot 4 -->
 		<dependency>
 			<groupId>cn.dev33</groupId>
@@ -63,18 +69,12 @@
 			<version>${sa-token.version}</version>
 		</dependency>
 
-		<!--        &lt;!&ndash; jpa &ndash;&gt;-->
-		<!--        <dependency>-->
-		<!--            <groupId>org.springframework.boot</groupId>-->
-		<!--            <artifactId>spring-boot-starter-data-jpa</artifactId>-->
-		<!--        </dependency>-->
-
-		<!--        &lt;!&ndash; pgsql &ndash;&gt;-->
-		<!--        <dependency>-->
-		<!--            <groupId>org.postgresql</groupId>-->
-		<!--            <artifactId>postgresql</artifactId>-->
-		<!--            <scope>runtime</scope>-->
-		<!--        </dependency>-->
+		<!-- postgresql -->
+		<dependency>
+			<groupId>org.postgresql</groupId>
+			<artifactId>postgresql</artifactId>
+			<scope>runtime</scope>
+		</dependency>
 
 		<!--        &lt;!&ndash; redis &ndash;&gt;-->
 		<!--        <dependency>-->
@@ -150,6 +150,13 @@
 			<scope>test</scope>
 		</dependency>
 
+		<!-- h2 -->
+		<dependency>
+			<groupId>com.h2database</groupId>
+			<artifactId>h2</artifactId>
+			<scope>test</scope>
+		</dependency>
+
 	</dependencies>
 
 	<dependencyManagement>
@@ -200,7 +207,7 @@
 			<plugin>
 				<groupId>org.jacoco</groupId>
 				<artifactId>jacoco-maven-plugin</artifactId>
-				<version>0.8.12</version>
+				<version>0.8.14</version>
 				<executions>
 					<execution>
 						<goals>

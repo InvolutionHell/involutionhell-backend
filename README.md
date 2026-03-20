@@ -106,7 +106,7 @@
 
 - Spring Boot 4 Web 服务基线
 - Sa-Token 用户登录态与权限控制
-- 用户中心最小 RBAC 骨架
+- PostgreSQL 18 持久化用户中心
 - GraalVM Native Image 原生编译支持
 - Spring Boot 4 测试链路与接口权限测试
 
@@ -119,6 +119,8 @@
 - Java 25
 - Spring Boot 4.0.4
 - Spring Web MVC
+- Spring JDBC
+- PostgreSQL 18
 - Sa-Token 1.45.0
 - Jakarta Validation
 - OpenAI Responses API
@@ -128,22 +130,38 @@
 
 ### 生产推荐配套
 
+- PostgreSQL 18
 - Redis 7
 - Apache RocketMQ 5.3.x
 - Caddy
+- maven < 3.9
+
+#### !检查是否成功使用 GraalVM 
+
+```bash
+mvn --version
+```
+
+```text
+Apache Maven 3.9.11 (3e54c93a704957b63ee3494413a2b544fd3d825b)
+Maven home: /opt/homebrew/Cellar/maven/3.9.11/libexec
+Java version: 25.0.2, vendor: Oracle Corporation, runtime: /Users/polaris/.sdkman/candidates/java/25.0.2-graal
+Default locale: zh_AU_#Hans, platform encoding: UTF-8
+OS name: "mac os x", version: "26.3.1", arch: "aarch64", family: "mac"
+```
 
 说明：
 
-- 当前代码仓库已经包含用户中心与权限控制骨架。
+- 当前代码仓库已经包含基于 PostgreSQL 的用户中心与权限控制实现。
 - 仓库已补充中间件编排示例与反向代理示例，便于本地联调和生产方案设计。
-- 当前业务代码还没有把 `Redis`、`RocketMQ` 全部真正接入，只是提前提供了部署骨架。
+- 当前业务代码已经接入 `PostgreSQL`，`Redis`、`RocketMQ` 仍保留为后续扩展骨架。
 
 ## 环境要求
 
 - macOS 或 Linux
 - `zsh`、`bash` 等常见 shell 环境
-- JDK 21
-- GraalVM 21（仅在执行本地 `native:compile-no-fork` 时需要）
+- JDK 25
+- GraalVM 25（为你满足 spring boot4 执行 `native:compile-no-fork` 时需要）
 - Docker Engine 24+ 与 Docker Compose v2
 - 建议内存：
   - JVM 模式开发：4GB 及以上
@@ -156,11 +174,9 @@
 
 ```text
 .
-├── .mvn/                              # Maven Wrapper 配置
-├── compose-pre-up.sh                 # compose up 前的优雅停机脚本
-├── docker-compose.yml                # 后端应用 + Redis 7 + Caddy 编排
+├── .mvn/                             # Maven Wrapper 配置
+├── docker-compose.yml                # Redis 7 + backend + Caddy 编排
 ├── docker-compose.middleware.yml     # 本地/测试环境中间件编排
-├── Dockerfile                        # Caddy 反向代理镜像定义
 ├── .env.example                      # 中间件环境变量示例
 ├── src/
 │   ├── main/
@@ -170,19 +186,22 @@
 │   │   │   ├── openai/               # OpenAI SSE 接口与流式转发
 │   │   │   └── usercenter/           # 用户中心、鉴权、RBAC 相关代码
 │   │   └── resources/
-│   │       └── application.properties
+│   │       ├── application.properties
+│   │       └── schema.sql            # PostgreSQL 建表脚本
 │   └── test/
-│       └── java/com/involutionhell/backend/
-│           └── BackendApplicationTests.java
+│       ├── java/com/involutionhell/backend/
+│       │   └── BackendApplicationTests.java
+│       └── resources/
+│           └── test-schema.sql       # 测试环境重建脚本
 ├── pom.xml
-└── target/                           # 构建产物目录，不建议提交
+└── target/                           # 构建产物目录
 ```
 
-### 用户中心包结构
+### 用户中心结构
 
 - `controller/`：认证接口与用户中心接口
 - `service/`：登录、权限、用户查询等业务逻辑
-- `repository/`：当前为内存仓库，后续可替换为 JPA / MyBatis
+- `repository/`：JDBC 仓库实现与数据库种子初始化
 - `security/`：Sa-Token 角色权限桥接
 - `dto/`：请求和响应对象
 - `model/`：领域模型
@@ -193,11 +212,11 @@
 ### 1. 克隆并进入项目
 
 ```bash
-git clone https://github.com/InvolutionHell/backend.git
+git clone https://github.com/InvolutionHell/involutionhell-backend.git
 cd backend
 ```
 
-### 2. 启动中间件
+### 2. 启动 PostgreSQL 18 与 Redis 7
 
 复制环境变量模板：
 
@@ -208,14 +227,12 @@ cp .env.example .env
 根据你的环境修改 `.env`，然后启动中间件：
 
 ```bash
-docker compose -f docker-compose.yml up -d
+docker compose up -d redis
 ```
 
 默认会启动一套联调基线：
 
 - Redis
-- RocketMQ NameServer
-- RocketMQ Broker
 
 ### 3. 启动后端服务
 
@@ -232,24 +249,24 @@ mvn -Pnative spring-boot:build-image \
   -DskipTests \
   -Dspring-boot.build-image.imageName=backend:native \
   -Dspring-boot.build-image.environment.BP_JVM_VERSION=25 \
-  -Dspring-boot.build-image.imagePlatform=linux/amd64
+  -Dspring-boot.build-image.imagePlatform=linux/arm64
 
 ./compose-pre-up.sh
 docker compose up -d --build
 ```
 
-这一模式默认会启动 `Caddy + backend + Redis 7`。其中 `backend` 由 Spring Boot `build-image` 生成原生镜像，项目 `Dockerfile` 仅用于构建 `Caddy`。
+这一模式默认会启动 `Redis 7 + Caddy + backend`。其中 `backend` 由 Spring Boot `build-image` 生成原生镜像。
 
 默认入口为：
 
 ```text
-http://127.0.0.1
+http://127.0.0.1:8080/api/v1
 ```
 
 如果你是直接以 JVM 或单独应用容器方式运行后端，请改用：
 
 ```text
-http://127.0.0.1:8080
+http://127.0.0.1:8080/api/v1
 ```
 
 仅启动应用容器：
@@ -259,9 +276,9 @@ mvn -Pnative spring-boot:build-image \
   -DskipTests \
   -Dspring-boot.build-image.imageName=backend:native \
   -Dspring-boot.build-image.environment.BP_JVM_VERSION=25 \
-  -Dspring-boot.build-image.imagePlatform=linux/amd64
+  -Dspring-boot.build-image.imagePlatform=linux/arm64
 
-docker run --rm --platform linux/amd64 -p 8080:8080 --env-file .env backend:native
+docker run --rm --platform linux/arm64 -p 8080:8080 --env-file .env backend:native
 ```
 
 ### 4. 调用示例接口
@@ -365,13 +382,6 @@ target/surefire-reports/
 
 ## 生产部署
 
-### 部署模式建议
-
-推荐两种部署方式：
-
-1. JVM 包部署：适合传统 Java 应用服务器环境。
-2. GraalVM Native 部署：适合追求更低启动时间和更低内存占用的场景。
-
 ### 中间件基线
 
 生产环境建议至少准备以下服务：
@@ -414,17 +424,18 @@ mvn -Pnative spring-boot:build-image \
   -DskipTests \
   -Dspring-boot.build-image.imageName=backend:native \
   -Dspring-boot.build-image.environment.BP_JVM_VERSION=25 \
-  -Dspring-boot.build-image.imagePlatform=linux/amd64
+  -Dspring-boot.build-image.imagePlatform=linux/arm64
 ```
 
 再启动应用与 Caddy：
 
 ```bash
+./compose-pre-up.sh
 docker compose up -d --build
 ```
 
 默认情况下，`docker-compose.yml` 会直接使用 `.env` 中的 `BACKEND_IMAGE_NAME`，默认值是 `backend:native`，并固定以 `linux/amd64` 运行 `backend` 服务。
-`./compose-pre-up.sh` 会在重新拉起前，按顺序优雅停止 `backend`、`caddy`、`redis`。当前编排中的三个服务共享同一个 Docker 网络。
+`./compose-pre-up.sh` 会在重新拉起前，按顺序优雅停止 `backend`、`caddy`、`redis`。当前编排中的 `postgres`、`redis`、`caddy`、`backend` 共享同一个 Docker 网络。
 
 如果你想调整后端镜像名：
 
@@ -433,7 +444,7 @@ mvn -Pnative spring-boot:build-image \
   -DskipTests \
   -Dspring-boot.build-image.imageName=<your-image-name> \
   -Dspring-boot.build-image.environment.BP_JVM_VERSION=25 \
-  -Dspring-boot.build-image.imagePlatform=linux/amd64
+  -Dspring-boot.build-image.imagePlatform=linux/arm64
 ```
 
 如果你只想构建 Caddy 代理镜像：
@@ -444,10 +455,17 @@ docker build -t involution-hell-caddy .
 
 默认通过以下环境变量驱动容器运行参数：
 
+- `POSTGRES_DB`
+- `POSTGRES_USER`
+- `POSTGRES_PASSWORD`
 - `SPRING_PROFILES_ACTIVE`
 - `SERVER_PORT`
 - `SPRING_APPLICATION_NAME`
 - `BACKEND_IMAGE_NAME`
+- `SPRING_DATASOURCE_URL`
+- `SPRING_DATASOURCE_USERNAME`
+- `SPRING_DATASOURCE_PASSWORD`
+- `SPRING_SQL_INIT_MODE`
 - `SA_TOKEN_TOKEN_NAME`
 - `SA_TOKEN_TIMEOUT`
 - `SA_TOKEN_ACTIVE_TIMEOUT`
@@ -481,23 +499,6 @@ docker build -t involution-hell-caddy .
 ./target/backend
 ```
 
-### Caddy 反向代理
-
-仓库提供了示例配置：
-
-```text
-deploy/caddy/Caddyfile
-```
-
-这一版 Caddy 配置默认包含以下能力：
-
-- 上游主动健康检查
-- `zstd/gzip` 压缩
-- 基础安全响应头
-- 屏蔽 `TRACE/TRACK`
-- JSON 访问日志
-- 基于环境变量的站点地址和上游目标配置
-
 ### 生产部署建议
 
 - Redis 开启密码与网络访问控制
@@ -505,7 +506,7 @@ deploy/caddy/Caddyfile
 - 所有配置通过环境变量或密钥管理系统注入，不要把生产密钥写死到仓库
 - Caddy 层启用自动 HTTPS、请求体限制、结构化访问日志与上游健康探测
 - 为应用增加健康检查、监控和告警
-- 发布前先执行 `./mvnw test` 与 `./mvnw -DskipTests native:compile-no-fork`
+- 发布前先执行 `./mvnw test` 与 `./mvnw -Pnative -DskipTests native:compile-no-fork`
 
 ## 贡献规范
 
@@ -534,21 +535,6 @@ deploy/caddy/Caddyfile
 - 仓库层后续替换为数据库实现时，保持接口语义稳定
 - 新增中间件接入时，优先通过配置隔离环境差异
 
-## 协议版权
-
-当前仓库**尚未附带独立的 LICENSE 文件**。
-
-因此，在仓库正式声明开源协议之前：
-
-- 代码版权默认归项目维护者或所属组织所有
-- 未经授权，不建议将本仓库内容用于再分发或商业发布
-- 如计划对外开源，请尽快补充明确的 `LICENSE` 文件，并同步更新本节内容
-
-如果你准备将项目开源，常见可选协议包括：
-
-- MIT：更宽松
-- Apache-2.0：宽松且带专利授权条款
-- GPL/AGPL：更强调衍生作品的开源要求
 
 ## 维护说明
 

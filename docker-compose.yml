@@ -11,6 +11,10 @@ services:
       SERVER_PORT: ${SERVER_PORT:-8080}
       SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-default}
       SPRING_APPLICATION_NAME: ${SPRING_APPLICATION_NAME:-backend}
+      SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL:-jdbc:postgresql://postgres:5432/involution_hell}
+      SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME:-involution}
+      SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD:-change_me}
+      SPRING_SQL_INIT_MODE: ${SPRING_SQL_INIT_MODE:-always}
       SA_TOKEN_TOKEN_NAME: ${SA_TOKEN_TOKEN_NAME:-satoken}
       SA_TOKEN_TIMEOUT: ${SA_TOKEN_TIMEOUT:-2592000}
       SA_TOKEN_ACTIVE_TIMEOUT: ${SA_TOKEN_ACTIVE_TIMEOUT:-7200}
@@ -34,6 +38,8 @@ services:
     depends_on:
       caddy:
         condition: service_started
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
 
@@ -44,7 +50,7 @@ services:
     command: >
       redis-server
       --appendonly yes
-      --requirepass ${REDIS_PASSWORD:-change_me} /usr/local/redis/redis.conf
+      --requirepass ${REDIS_PASSWORD} /usr/local/redis/redis.conf
     volumes:
       - /home/ubuntu/involution-hell/redis7-data:/data
       - /home/ubuntu/involution-hell/redis7-conf/redis.conf:/usr/local/etc/redis/redis.conf

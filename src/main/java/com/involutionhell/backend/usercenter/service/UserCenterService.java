@@ -4,7 +4,7 @@ import cn.dev33.satoken.stp.StpUtil;
 import com.involutionhell.backend.usercenter.dto.UserAuthorizationUpdateRequest;
 import com.involutionhell.backend.usercenter.dto.UserView;
 import com.involutionhell.backend.usercenter.model.UserAccount;
-import com.involutionhell.backend.usercenter.repository.InMemoryUserAccountRepository;
+import com.involutionhell.backend.usercenter.repository.UserAccountRepository;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.stereotype.Service;
@@ -12,12 +12,12 @@ import org.springframework.stereotype.Service;
 @Service
 public class UserCenterService {
 
-    private final InMemoryUserAccountRepository userAccountRepository;
+    private final UserAccountRepository userAccountRepository;
 
     /**
      * 创建用户中心服务并注入用户仓库。
      */
-    public UserCenterService(InMemoryUserAccountRepository userAccountRepository) {
+    public UserCenterService(UserAccountRepository userAccountRepository) {
         this.userAccountRepository = userAccountRepository;
     }
 
