@@ -12,9 +12,10 @@ RUN chmod +x mvnw && ./mvnw dependency:go-offline -q
 
 # 复制源码并编译 Native Image
 COPY src ./src
-# GitHub Actions buildkit 容器中 /tmp 以 noexec 挂载，GraalVM 需要在 /tmp 执行 C 辅助程序
-# 将 TMPDIR 指向有执行权限的目录解决此问题
-RUN mkdir -p /app/tmp && TMPDIR=/app/tmp ./mvnw -DskipTests -Pnative package
+# GitHub Actions buildkit 容器中 /tmp 以 noexec 挂载
+# 用 --mount=type=tmpfs 挂载一个有 exec 权限的新 tmpfs，GraalVM 的 C 辅助程序才能执行
+RUN --mount=type=tmpfs,target=/tmp \
+    ./mvnw -DskipTests -Pnative package
 
 # 第二阶段：最小化运行镜像
 FROM ubuntu:24.04
