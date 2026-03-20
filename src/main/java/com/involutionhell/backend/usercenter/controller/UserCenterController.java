@@ -1,6 +1,6 @@
 package com.involutionhell.backend.usercenter.controller;
 
-import cn.dev33.satoken.annotation.SaCheckPermission;
+import org.springframework.security.access.prepost.PreAuthorize;
 import com.involutionhell.backend.common.api.ApiResponse;
 import com.involutionhell.backend.usercenter.dto.UserAuthorizationUpdateRequest;
 import com.involutionhell.backend.usercenter.dto.UserView;
@@ -30,7 +30,7 @@ public class UserCenterController {
     /**
      * 查询当前登录用户的用户中心资料。
      */
-    @SaCheckPermission("user:profile:read")
+    @PreAuthorize("hasAuthority('user:profile:read')")
     @GetMapping("/profile")
     public ApiResponse<UserView> currentProfile() {
         return ApiResponse.ok(userCenterService.currentUser());
@@ -39,7 +39,7 @@ public class UserCenterController {
     /**
      * 查询用户中心中的全部用户。
      */
-    @SaCheckPermission("user:center:read")
+    @PreAuthorize("hasAuthority('user:center:read')")
     @GetMapping("/users")
     public ApiResponse<List<UserView>> listUsers() {
         return ApiResponse.ok(userCenterService.listUsers());
@@ -48,7 +48,7 @@ public class UserCenterController {
     /**
      * 按用户 ID 查询单个用户详情。
      */
-    @SaCheckPermission("user:center:read")
+    @PreAuthorize("hasAuthority('user:center:read')")
     @GetMapping("/users/{userId}")
     public ApiResponse<UserView> getUser(@PathVariable Long userId) {
         return ApiResponse.ok(userCenterService.getUser(userId));
@@ -57,7 +57,7 @@ public class UserCenterController {
     /**
      * 更新指定用户的角色与权限集合。
      */
-    @SaCheckPermission("user:center:manage")
+    @PreAuthorize("hasAuthority('user:center:manage')")
     @PutMapping("/users/{userId}/authorization")
     public ApiResponse<UserView> updateAuthorization(
             @PathVariable Long userId,

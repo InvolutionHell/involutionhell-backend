@@ -1,7 +1,8 @@
 package com.involutionhell.backend.usercenter.service;
 
-import cn.dev33.satoken.stp.SaTokenInfo;
-import cn.dev33.satoken.stp.StpUtil;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.oauth2.jwt.Jwt;
 import com.involutionhell.backend.usercenter.dto.LoginRequest;
 import com.involutionhell.backend.usercenter.dto.LoginResponse;
 import com.involutionhell.backend.usercenter.dto.UserView;
@@ -23,7 +24,7 @@ public class AuthService {
     }
 
     /**
-     * 校验登录请求并创建新的登录会话。
+     * 校验登录请求。当前阶段仅演示，实际建议通过 OAuth2 流程。
      */
     public LoginResponse login(LoginRequest request) {
         UserAccount userAccount = userCenterService.findByUsername(request.username())
@@ -35,16 +36,15 @@ public class AuthService {
             throw new IllegalArgumentException("用户名或密码错误");
         }
 
-        StpUtil.login(userAccount.id());
-        SaTokenInfo tokenInfo = StpUtil.getTokenInfo();
-        return new LoginResponse(tokenInfo.getTokenName(), tokenInfo.getTokenValue(), UserView.from(userAccount));
+        // 迁移标记：原 Sa-Token 登录已移除，此处应生成基于 JWT 的 Token 或交由 OAuth2 控制。
+        return new LoginResponse("Bearer", "MOCK_TOKEN_" + userAccount.id(), UserView.from(userAccount));
     }
 
     /**
      * 退出当前登录会话。
      */
     public void logout() {
-        StpUtil.logout();
+        // 迁移标记：Spring Security 的退出通常通过 SecurityContextLogoutHandler 控制。
     }
 
     /**

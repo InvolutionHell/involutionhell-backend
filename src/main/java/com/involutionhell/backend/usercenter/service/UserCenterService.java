@@ -1,6 +1,7 @@
 package com.involutionhell.backend.usercenter.service;
 
-import cn.dev33.satoken.stp.StpUtil;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.oauth2.jwt.Jwt;
 import com.involutionhell.backend.usercenter.dto.UserAuthorizationUpdateRequest;
 import com.involutionhell.backend.usercenter.dto.UserView;
 import com.involutionhell.backend.usercenter.model.UserAccount;
@@ -32,7 +33,18 @@ public class UserCenterService {
      * 获取当前登录用户的信息。
      */
     public UserView currentUser() {
-        Long currentUserId = Long.parseLong(String.valueOf(StpUtil.getLoginId()));
+        Object principal = SecurityContextHolder.getContext().getAuthentication().getPrincipal();
+        Long currentUserId;
+        
+        if (principal instanceof Jwt jwt) {
+            currentUserId = Long.parseLong(jwt.getSubject());
+        } else if (principal instanceof Long id) {
+            currentUserId = id;
+        } else {
+            // 这里可以扩展更多的主体解析逻辑
+            throw new IllegalStateException("无法解析当前用户身份");
+        }
+        
         return getUser(currentUserId);
     }
 
