@@ -47,7 +47,7 @@ services:
       --requirepass ${REDIS_PASSWORD:-change_me} /usr/local/redis/redis.conf
     volumes:
       - /home/ubuntu/involution-hell/redis7-data:/data
-      - /home/ubuntu/involution-hell/redis7-conf/redos.conf:/usr/local/etc/redis/redis.conf
+      - /home/ubuntu/involution-hell/redis7-conf/redis.conf:/usr/local/etc/redis/redis.conf
     ports:
       - "6382:6379"
       - "16382:16379"
