@@ -13,7 +13,7 @@ RUN chmod +x mvnw && ./mvnw dependency:go-offline -q
 COPY src ./src
 # -Pnative package 会触发 Spring Boot AOT 处理（process-aot）再进行 native-image 编译
 # 直接调用 native:compile / native:compile-no-fork 会跳过 AOT 阶段，导致找不到主类
-RUN ./mvnw -DskipTests -Pnative package -q
+RUN ./mvnw -DskipTests -Pnative package
 
 # 第二阶段：最小化运行镜像
 FROM ubuntu:24.04
