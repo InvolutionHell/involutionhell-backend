@@ -12,6 +12,9 @@ jobs:
     environment: production
 
     steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
       - name: 将源码同步到服务器
         uses: appleboy/scp-action@v0.1.7
         with:
