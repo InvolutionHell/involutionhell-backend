@@ -1,8 +1,8 @@
 services:
   backend:
-    image: ${BACKEND_IMAGE_NAME:-backend:native}
+    image: ${BACKEND_IMAGE_NAME:-ghcr.io/involutionhell/involutionhell-backend:latest}
     platform: linux/amd64
-    pull_policy: never
+    pull_policy: always
     container_name: involution-hell-backend
     restart: always
     env_file:
@@ -86,8 +86,6 @@ services:
       - InvolutionHell-net
 
   caddy:
-    build:
-      context: .
     image: caddy:2.10-alpine
     container_name: involution-hell-caddy
     restart: unless-stopped

@@ -1,0 +1,8 @@
+# Caddy 反向代理配置
+# 通过环境变量控制监听地址和上游服务地址
+{$CADDY_SITE_ADDRESS::80} {
+    # 将所有请求转发至后端 Spring Boot 服务
+    reverse_proxy {$CADDY_UPSTREAM:backend:8080} {
+        health_uri /actuator/health
+    }
+}
