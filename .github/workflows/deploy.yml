@@ -60,7 +60,7 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           source: "docker-compose.yml,Caddyfile,docker/"
-          target: "/opt/involutionhell"
+          target: "/home/ubuntu/involution-hell"
 
       - name: 远程执行部署
         uses: appleboy/ssh-action@v1
@@ -69,7 +69,7 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
-            cd /opt/involutionhell
+            cd /home/ubuntu/involution-hell
 
             # 写入镜像名，确保拉取最新
             export BACKEND_IMAGE_NAME=${{ env.IMAGE_NAME }}:${{ github.sha }}

@@ -11,7 +11,8 @@ RUN chmod +x mvnw && ./mvnw dependency:go-offline -q
 
 # 复制源码并编译 Native Image
 COPY src ./src
-RUN ./mvnw -DskipTests native:compile-no-fork -q
+# native:compile 会自动触发 Java 编译阶段并识别 Spring Boot 主类
+RUN ./mvnw -DskipTests native:compile -q
 
 # 第二阶段：最小化运行镜像
 FROM ubuntu:24.04
