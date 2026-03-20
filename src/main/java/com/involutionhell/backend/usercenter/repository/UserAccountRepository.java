@@ -1,0 +1,32 @@
+package com.involutionhell.backend.usercenter.repository;
+
+import com.involutionhell.backend.usercenter.model.UserAccount;
+import java.util.List;
+import java.util.Optional;
+import java.util.Set;
+
+/**
+ * 用户账号数据访问接口（Java 侧 Sa-Token 认证用户，对应 user_accounts 表）。
+ */
+public interface UserAccountRepository {
+
+    /**
+     * 按主键查询用户。
+     */
+    Optional<UserAccount> findById(Long id);
+
+    /**
+     * 按用户名查询用户。
+     */
+    Optional<UserAccount> findByUsername(String username);
+
+    /**
+     * 查询所有用户。
+     */
+    List<UserAccount> findAll();
+
+    /**
+     * 更新指定用户的角色与权限，返回更新后的用户对象。
+     */
+    UserAccount updateAuthorization(Long userId, Set<String> roles, Set<String> permissions);
+}
