@@ -11,8 +11,8 @@ services:
       SPRING_APPLICATION_NAME: ${SPRING_APPLICATION_NAME:-backend}
       # 数据库连接（使用 PG* 变量，与 application.properties 保持一致）
       SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL:-jdbc:postgresql://postgres:5432/involution_hell}
-      PGUSER: ${POSTGRES_USER:-involution}
-      PGPASSWORD: ${POSTGRES_PASSWORD:-change_me}
+      PGUSER: ${PGUSER:-involution}
+      PGPASSWORD: ${PGPASSWORD:-change_me}
       SPRING_SQL_INIT_MODE: ${SPRING_SQL_INIT_MODE:-always}
       # GitHub OAuth2
       AUTH_GITHUB_ID: ${AUTH_GITHUB_ID:-}
