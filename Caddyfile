@@ -3,6 +3,6 @@
 {$CADDY_SITE_ADDRESS::80} {
     # 将所有请求转发至后端 Spring Boot 服务
     reverse_proxy {$CADDY_UPSTREAM:backend:8080} {
-        health_uri /actuator/health
+        health_uri /api/v1/actuator/health
     }
 }
