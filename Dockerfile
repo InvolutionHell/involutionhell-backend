@@ -1,5 +1,6 @@
 # 多阶段构建：第一阶段用 GraalVM 编译 Native Image
-FROM ghcr.io/graalvm/native-image-community:25-muslib AS build
+# 使用标准 glibc 版本，muslib (musl) 变体对 arm64 支持有限
+FROM ghcr.io/graalvm/native-image-community:25 AS build
 
 WORKDIR /app
 
