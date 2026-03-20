@@ -122,6 +122,33 @@ curl -X POST http://127.0.0.1:8080/api/auth/login \
 # 产物位于 target/backend
 ```
 
+## CI/CD 自动部署
+
+推送到 `main` 分支后，GitHub Actions 会自动触发部署流程：
+
+```
+push to main
+  → SCP 同步源码到服务器
+  → 服务器执行 docker build
+  → docker compose up -d 重启服务
+```
+
+**生产环境健康检查端点：**
+
+```
+GET https://api.involutionhell.com/api/v1/actuator/health
+```
+
+返回 `{"status":"UP"}` 表示服务正常运行。
+
+> [!IMPORTANT]
+> **关于部署失败与宕机风险：**
+>
+> - **`docker build` 阶段失败** → 安全，旧容器不受影响，GitHub Actions 标红但服务继续运行。
+> - **build 成功但新容器启动崩溃**（配置错误、数据库迁移异常等）→ 会短暂宕机。旧容器已被停止，新容器因 `restart: always` 持续重启但无法自愈，需人工介入。
+>
+> 合并前请确保本地执行 `./mvnw test` 通过，并确认 `.env` 所需的环境变量在服务器上已正确配置。
+
 ## 贡献规范
 - 保持代码可编译，提交前执行 `./mvnw test`。
 - 业务逻辑请放在 `service` 层，保持 `controller` 层简洁。

@@ -35,8 +35,29 @@ jobs:
           script: |
             cd /home/ubuntu/involution-hell
 
-            # 构建新镜像（失败则整个 workflow 标红）
+            # 保存当前镜像为回滚备份（首次部署时镜像可能不存在，忽略错误）
+            docker tag involutionhell-backend:latest involutionhell-backend:rollback 2>/dev/null || true
+
+            # 构建新镜像（失败则整个 workflow 标红，旧容器不受影响）
             docker build -t involutionhell-backend:latest .
 
             # 用新镜像重启服务
             docker compose up -d --remove-orphans
+
+            # 等待服务启动，最多 60 秒
+            echo "等待服务健康检查..."
+            for i in $(seq 1 12); do
+              if curl -fsS "http://127.0.0.1:8080/api/v1/actuator/health" | grep -q '"status":"UP"'; then
+                echo "✅ 部署成功，服务正常运行"
+                exit 0
+              fi
+              echo "第 $i 次检查未就绪，5 秒后重试..."
+              sleep 5
+            done
+
+            # 健康检查超时，用备份镜像回滚
+            echo "❌ 健康检查失败，正在回滚到上一个版本..."
+            docker tag involutionhell-backend:rollback involutionhell-backend:latest
+            docker compose up -d --remove-orphans
+            echo "回滚完成，workflow 标红以提示本次部署失败"
+            exit 1
