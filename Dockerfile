@@ -11,9 +11,9 @@ RUN chmod +x mvnw && ./mvnw dependency:go-offline -q
 
 # 复制源码并编译 Native Image
 COPY src ./src
-# -Pnative package 会触发 Spring Boot AOT 处理（process-aot）再进行 native-image 编译
-# 直接调用 native:compile / native:compile-no-fork 会跳过 AOT 阶段，导致找不到主类
-RUN ./mvnw -DskipTests -Pnative package
+# GitHub Actions buildkit 容器中 /tmp 以 noexec 挂载，GraalVM 需要在 /tmp 执行 C 辅助程序
+# 将 TMPDIR 指向有执行权限的目录解决此问题
+RUN mkdir -p /app/tmp && TMPDIR=/app/tmp ./mvnw -DskipTests -Pnative package
 
 # 第二阶段：最小化运行镜像
 FROM ubuntu:24.04
