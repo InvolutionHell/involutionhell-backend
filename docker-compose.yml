@@ -43,6 +43,27 @@ services:
       redis:
         condition: service_healthy
 
+  postgres:
+    image: postgres:18-alpine
+    container_name: involution-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-involution_hell}
+      POSTGRES_USER: ${POSTGRES_USER:-involution}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./docker/init-db:/docker-entrypoint-initdb.d
+      - involution-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-involution} -d ${POSTGRES_DB:-involution_hell}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - InvolutionHell-net
+
   redis:
     image: redis:7-alpine
     container_name: involution-redis
@@ -50,10 +71,9 @@ services:
     command: >
       redis-server
       --appendonly yes
-      --requirepass ${REDIS_PASSWORD} /usr/local/redis/redis.conf
+      --requirepass ${REDIS_PASSWORD:-change_me}
     volumes:
-      - /home/ubuntu/involution-hell/redis7-data:/data
-      - /home/ubuntu/involution-hell/redis7-conf/redis.conf:/usr/local/etc/redis/redis.conf
+      - involution-redis-data:/data
     ports:
       - "6382:6379"
       - "16382:16379"
@@ -77,12 +97,18 @@ services:
       - "${CADDY_HTTP_PORT:-80}:80"
       - "${CADDY_HTTPS_PORT:-443}:443"
     volumes:
-      - /home/ubuntu/involution-hell/caddy-data:/data
-      - /home/ubuntu/involution-hell/caddy-conf:/config
-      - /home/ubuntu/involution-hell/caddy-conf/Caddyfile:/etc/caddy/Caddyfile:ro
+      - involution-caddy-data:/data
+      - involution-caddy-config:/config
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
     networks:
       - InvolutionHell-net
 
 networks:
   InvolutionHell-net:
     driver: bridge
+
+volumes:
+  involution-postgres-data:
+  involution-redis-data:
+  involution-caddy-data:
+  involution-caddy-config:
