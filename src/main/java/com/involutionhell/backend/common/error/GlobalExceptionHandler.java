@@ -1,8 +1,7 @@
 package com.involutionhell.backend.common.error;
 
-import cn.dev33.satoken.exception.NotLoginException;
-import cn.dev33.satoken.exception.NotPermissionException;
-import cn.dev33.satoken.exception.NotRoleException;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.authentication.InsufficientAuthenticationException;
 import com.involutionhell.backend.common.api.ApiResponse;
 import jakarta.validation.ConstraintViolationException;
 import java.util.Optional;
@@ -19,8 +18,11 @@ public class GlobalExceptionHandler {
     /**
      * 将未登录异常转换为 401 响应
      */
-    @ExceptionHandler(NotLoginException.class)
-    public ResponseEntity<ApiResponse<Void>> handleNotLogin(NotLoginException exception) {
+    /**
+     * 将认证不足异常转换为 401 响应
+     */
+    @ExceptionHandler(InsufficientAuthenticationException.class)
+    public ResponseEntity<ApiResponse<Void>> handleAuthentication(InsufficientAuthenticationException exception) {
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                 .body(ApiResponse.fail("未登录或登录状态已失效"));
     }
@@ -28,19 +30,13 @@ public class GlobalExceptionHandler {
     /**
      * 将权限不足异常转换为 403 响应
      */
-    @ExceptionHandler(NotPermissionException.class)
-    public ResponseEntity<ApiResponse<Void>> handleNotPermission(NotPermissionException exception) {
-        return ResponseEntity.status(HttpStatus.FORBIDDEN)
-                .body(ApiResponse.fail("无权限访问: " + exception.getPermission()));
-    }
-
     /**
-     * 将角色不足异常转换为 403 响应
+     * 将权限不足异常转换为 403 响应 (Spring Security 版)
      */
-    @ExceptionHandler(NotRoleException.class)
-    public ResponseEntity<ApiResponse<Void>> handleNotRole(NotRoleException exception) {
+    @ExceptionHandler(AccessDeniedException.class)
+    public ResponseEntity<ApiResponse<Void>> handleAccessDenied(AccessDeniedException exception) {
         return ResponseEntity.status(HttpStatus.FORBIDDEN)
-                .body(ApiResponse.fail("缺少角色: " + exception.getRole()));
+                .body(ApiResponse.fail("拒绝访问: 权限不足"));
     }
 
     /**

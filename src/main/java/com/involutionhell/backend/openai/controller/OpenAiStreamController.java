@@ -1,6 +1,6 @@
 package com.involutionhell.backend.openai.controller;
 
-import cn.dev33.satoken.annotation.SaCheckLogin;
+import org.springframework.security.access.prepost.PreAuthorize;
 import com.involutionhell.backend.openai.dto.OpenAiStreamRequest;
 import com.involutionhell.backend.openai.service.OpenAiStreamService;
 import jakarta.validation.Valid;
@@ -27,7 +27,7 @@ public class OpenAiStreamController {
     /**
      * 调用 OpenAI Responses API 并以 SSE 形式持续推送模型输出。
      */
-    @SaCheckLogin
+    @PreAuthorize("isAuthenticated()")
     @PostMapping(
             path = "/responses/stream",
             consumes = MediaType.APPLICATION_JSON_VALUE,

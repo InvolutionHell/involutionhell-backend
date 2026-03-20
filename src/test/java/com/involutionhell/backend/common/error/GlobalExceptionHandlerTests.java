@@ -2,9 +2,8 @@ package com.involutionhell.backend.common.error;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import cn.dev33.satoken.exception.NotLoginException;
-import cn.dev33.satoken.exception.NotPermissionException;
-import cn.dev33.satoken.exception.NotRoleException;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.authentication.InsufficientAuthenticationException;
 import com.involutionhell.backend.common.api.ApiResponse;
 import jakarta.validation.ConstraintViolationException;
 import jakarta.validation.Validation;
@@ -24,9 +23,9 @@ class GlobalExceptionHandlerTests {
     private final GlobalExceptionHandler handler = new GlobalExceptionHandler();
 
     @Test
-    void handleNotLoginReturnsUnauthorized() {
-        ResponseEntity<ApiResponse<Void>> response = handler.handleNotLogin(
-                new NotLoginException("未登录", "login", "token")
+    void handleAuthenticationReturnsUnauthorized() {
+        ResponseEntity<ApiResponse<Void>> response = handler.handleAuthentication(
+                new InsufficientAuthenticationException("未登录")
         );
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
@@ -34,21 +33,13 @@ class GlobalExceptionHandlerTests {
     }
 
     @Test
-    void handleNotPermissionReturnsForbidden() {
-        ResponseEntity<ApiResponse<Void>> response = handler.handleNotPermission(
-                new NotPermissionException("user:center:read")
+    void handleAccessDeniedReturnsForbidden() {
+        ResponseEntity<ApiResponse<Void>> response = handler.handleAccessDenied(
+                new AccessDeniedException("拒绝访问")
         );
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-        assertThat(response.getBody().message()).isEqualTo("无权限访问: user:center:read");
-    }
-
-    @Test
-    void handleNotRoleReturnsForbidden() {
-        ResponseEntity<ApiResponse<Void>> response = handler.handleNotRole(new NotRoleException("admin"));
-
-        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-        assertThat(response.getBody().message()).isEqualTo("缺少角色: admin");
+        assertThat(response.getBody().message()).isEqualTo("拒绝访问: 权限不足");
     }
 
     @Test
