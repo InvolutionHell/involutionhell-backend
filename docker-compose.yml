@@ -9,22 +9,23 @@ services:
       - .env
     environment:
       SERVER_PORT: ${SERVER_PORT:-8080}
-      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-default}
       SPRING_APPLICATION_NAME: ${SPRING_APPLICATION_NAME:-backend}
+      # 数据库连接（使用 PG* 变量，与 application.properties 保持一致）
       SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL:-jdbc:postgresql://postgres:5432/involution_hell}
-      SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME:-involution}
-      SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD:-change_me}
+      PGUSER: ${POSTGRES_USER:-involution}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-change_me}
       SPRING_SQL_INIT_MODE: ${SPRING_SQL_INIT_MODE:-always}
-      SA_TOKEN_TOKEN_NAME: ${SA_TOKEN_TOKEN_NAME:-satoken}
-      SA_TOKEN_TIMEOUT: ${SA_TOKEN_TIMEOUT:-2592000}
-      SA_TOKEN_ACTIVE_TIMEOUT: ${SA_TOKEN_ACTIVE_TIMEOUT:-7200}
-      SA_TOKEN_IS_CONCURRENT: ${SA_TOKEN_IS_CONCURRENT:-true}
-      SA_TOKEN_IS_SHARE: ${SA_TOKEN_IS_SHARE:-false}
-      SA_TOKEN_TOKEN_STYLE: ${SA_TOKEN_TOKEN_STYLE:-random-64}
-      SA_TOKEN_IS_LOG: ${SA_TOKEN_IS_LOG:-true}
+      # GitHub OAuth2
+      AUTH_GITHUB_ID: ${AUTH_GITHUB_ID:-}
+      AUTH_GITHUB_SECRET: ${AUTH_GITHUB_SECRET:-}
+      AUTH_SECRET: ${AUTH_SECRET:-}
+      # OpenAI
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_API_URL: ${OPENAI_API_URL:-https://api.openai.com/v1}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4.1}
+      # Actuator
       MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: ${MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE:-health}
       MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED: ${MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED:-true}
-      MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: ${MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS:-never}
     expose:
       - "${SERVER_PORT:-8080}"
     healthcheck:
@@ -39,8 +40,6 @@ services:
       caddy:
         condition: service_started
       postgres:
-        condition: service_healthy
-      redis:
         condition: service_healthy
 
   postgres:
@@ -61,27 +60,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    networks:
-      - InvolutionHell-net
-
-  redis:
-    image: redis:7-alpine
-    container_name: involution-redis
-    restart: unless-stopped
-    command: >
-      redis-server
-      --appendonly yes
-      --requirepass ${REDIS_PASSWORD:-change_me}
-    volumes:
-      - involution-redis-data:/data
-    ports:
-      - "6382:6379"
-      - "16382:16379"
-    healthcheck:
-      test: ["CMD-SHELL", "redis-cli -a ${REDIS_PASSWORD:-change_me} ping | grep PONG"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
     networks:
       - InvolutionHell-net
 
@@ -107,6 +85,5 @@ networks:
 
 volumes:
   involution-postgres-data:
-  involution-redis-data:
   involution-caddy-data:
   involution-caddy-config:
