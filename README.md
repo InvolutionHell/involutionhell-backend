@@ -1,4 +1,102 @@
-# 内卷地狱 (Involution Hell) Backend
+<p align="right">
+  <a href="./README.md">简体中文</a>
+</p>
+
+<p align="center">
+  <a href="https://involutionhell.com">
+    <picture>
+      <!-- Dark mode logo -->
+      <source media="(prefers-color-scheme: dark)" srcset="https://involutionhell.com/logo/logoInDark.svg">
+      <!-- Light mode logo -->
+      <source media="(prefers-color-scheme: light)" srcset="https://involutionhell.com/logo/logoInLight.svg">
+      <!-- Fallback -->
+      <img src="https://involutionhell.com/mascot.webp" width="150" alt="Involution Hell Logo">
+    </picture>
+  </a>
+</p>
+
+<p align="center">
+  <img src="https://readme-typing-svg.demolab.com/?font=Noto+Sans+SC&weight=700&size=32&pause=1000&color=f6671b&center=true&vCenter=true&width=420&lines=%E5%86%85%E5%8D%B7%E5%9C%B0%E7%8B%B1%E5%90%8E%E7%AB%AF&duration=3000" alt="Typing SVG" />
+</p>
+
+<p align="center">
+  <img alt="Spring Boot" src="https://img.shields.io/badge/Spring_Boot-6DB33F?style=for-the-badge&logo=springboot&logoColor=white" />
+  <img alt="Kotlin" src="https://img.shields.io/badge/Kotlin-7F52FF?style=for-the-badge&logo=kotlin&logoColor=white" />
+  <img alt="PostgreSQL" src="https://img.shields.io/badge/PostgreSQL-4169E1?style=for-the-badge&logo=postgresql&logoColor=white" />
+  <img alt="Neon" src="https://img.shields.io/badge/Neon-00E599?style=for-the-badge&logo=neon&logoColor=black" />
+</p>
+
+---
+
+## 📖 项目简介
+
+这是 **[内卷地狱 (Involution Hell)](https://involutionhell.com)** 的官方后端服务。
+
+本项目采用 **Kotlin** 和 **Spring Boot** 构建，旨在为前端提供高性能、可扩展的 API 支持，包括但不限于用户管理、文档贡献统计、协作预览以及 AI 助手集成。
+
+> [!NOTE]
+> 本仓库仅包含后端代码。关于整个项目的愿景、贡献指南及前端实现，请参阅 **[主项目 README](../frontend/README.md)**。
+
+## ✨ 技术栈
+
+- **核心框架**: Spring Boot 4.0.3 (基于 Java 25)
+- **开发语言**: Kotlin 2.1.10 (协程支持)
+- **持久层**: Spring Data JPA + Hibernate 7
+- **数据库**: PostgreSQL (托管于 Neon.tech)
+- **构建工具**: Maven
+
+## 🚀 快速开始
+
+### 环境要求
+
+- **JDK 25+** (必须，项目利用了 Java 25 的最新特性)
+- **Maven 3.9+**
+- **PostgreSQL** (推荐使用 Neon.tech 提供的 Serverless 数据库)
+
+### 运行步骤
+
+1. **克隆仓库** (如果你还没有克隆整个项目):
+   ```bash
+   git clone https://github.com/involutionhell/involutionhell.git
+   cd involutionhell/backend-java
+   ```
+
+2. **配置环境变量**:
+   在 `src/main/resources/application.properties` 中配置你的数据库连接信息。
+   > [!IMPORTANT]
+   > 如果使用 Neon 数据库，请确保 URL 中包含 `sslmode=require`。
+
+3. **编译并启动**:
+   ```bash
+   ./mvnw spring-boot:run
+   ```
+   服务默认运行在 [http://localhost:8080](http://localhost:8080)。
+
+4. **验证接口**:
+   访问 [http://localhost:8080/api/users](http://localhost:8080/api/users) 查看用户列表测试。
+
+## 📁 目录概览
+
+```
+📦 backend-java
+├── 📂 src/main/kotlin    # Kotlin 源代码
+│   └── 📂 com.involutionhell.backend
+│       ├── 📄 BackendApplication.kt  # 入口类
+│       ├── 📄 UserController.kt      # 用户相关 API 与实体
+│       └── 📄 HomeTaskController.kt  # 远程任务分发示例
+├── 📂 src/main/resources   # 配置文件
+│   └── 📄 application.properties    # 主要配置文件
+├── 📂 .github/workflows    # CI/CD (GitHub Actions)
+└── 📄 pom.xml              # Maven 配置
+```
+
+## 🤝 贡献规范
+
+请参考主项目的 **[CONTRIBUTING.md](../frontend/CONTRIBUTING.md)** 以了解如何参与贡献。后端代码需遵循 Kotlin 官方代码风格指南，并确保通过所有单元测试。
+
+## 📜 协议与版权
+
+本项目代码遵循 [署名-非商业性使用-相同方式共享 4.0 国际许可协议（CC BY-NC-SA 4.0）](../frontend/LICENSE)。
 
 ## 项目简介
 
