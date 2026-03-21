@@ -47,7 +47,7 @@ jobs:
             # 等待服务启动，最多 60 秒
             echo "等待服务健康检查..."
             for i in $(seq 1 12); do
-              if curl -fsS "http://127.0.0.1:8080/api/v1/actuator/health" | grep -q '"status":"UP"'; then
+              if docker exec involution-hell-backend curl -fsS "http://127.0.0.1:8080/api/v1/actuator/health" | grep -q '"status":"UP"'; then
                 echo "✅ 部署成功，服务正常运行"
                 exit 0
               fi
