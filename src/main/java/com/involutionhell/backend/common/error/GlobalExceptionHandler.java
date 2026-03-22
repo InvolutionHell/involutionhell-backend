@@ -1,7 +1,8 @@
 package com.involutionhell.backend.common.error;
 
-import org.springframework.security.access.AccessDeniedException;
-import org.springframework.security.authentication.InsufficientAuthenticationException;
+import cn.dev33.satoken.exception.NotLoginException;
+import cn.dev33.satoken.exception.NotPermissionException;
+import cn.dev33.satoken.exception.NotRoleException;
 import com.involutionhell.backend.common.api.ApiResponse;
 import jakarta.validation.ConstraintViolationException;
 import java.util.Optional;
@@ -15,29 +16,51 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
+    // ==========================================
+    // Sa-Token 异常拦截
+    // ==========================================
+
     /**
-     * 将未登录异常转换为 401 响应
+     * Sa-Token: 拦截未登录异常
      */
-    /**
-     * 将认证不足异常转换为 401 响应
-     */
-    @ExceptionHandler(InsufficientAuthenticationException.class)
-    public ResponseEntity<ApiResponse<Void>> handleAuthentication(InsufficientAuthenticationException exception) {
+    @ExceptionHandler(NotLoginException.class)
+    public ResponseEntity<ApiResponse<Void>> handleNotLoginException(NotLoginException e) {
+        // 判断场景值，定制化异常信息
+        String message = switch (e.getType()) {
+            case NotLoginException.NOT_TOKEN -> "未提供 Token";
+            case NotLoginException.INVALID_TOKEN -> "Token 无效";
+            case NotLoginException.TOKEN_TIMEOUT -> "Token 已过期";
+            case NotLoginException.BE_REPLACED -> "Token 已被顶下线";
+            case NotLoginException.KICK_OUT -> "Token 已被踢下线";
+            case NotLoginException.TOKEN_FREEZE -> "Token 已被冻结";
+            case NotLoginException.NO_PREFIX -> "未按照指定前缀提交 Token";
+            default -> "当前会话未登录";
+        };
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                .body(ApiResponse.fail("未登录或登录状态已失效"));
+                .body(ApiResponse.fail(message));
     }
 
     /**
-     * 将权限不足异常转换为 403 响应
+     * Sa-Token: 拦截权限不足异常
      */
-    /**
-     * 将权限不足异常转换为 403 响应 (Spring Security 版)
-     */
-    @ExceptionHandler(AccessDeniedException.class)
-    public ResponseEntity<ApiResponse<Void>> handleAccessDenied(AccessDeniedException exception) {
+    @ExceptionHandler(NotPermissionException.class)
+    public ResponseEntity<ApiResponse<Void>> handleNotPermissionException(NotPermissionException e) {
         return ResponseEntity.status(HttpStatus.FORBIDDEN)
-                .body(ApiResponse.fail("拒绝访问: 权限不足"));
+                .body(ApiResponse.fail("拒绝访问: 缺少权限 [" + e.getCode() + "]"));
     }
+
+    /**
+     * Sa-Token: 拦截角色不足异常
+     */
+    @ExceptionHandler(NotRoleException.class)
+    public ResponseEntity<ApiResponse<Void>> handleNotRoleException(NotRoleException e) {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                .body(ApiResponse.fail("拒绝访问: 缺少角色 [" + e.getRole() + "]"));
+    }
+
+    // ==========================================
+    // 业务与通用异常拦截
+    // ==========================================
 
     /**
      * 将参数校验异常转换为 400 响应
@@ -65,6 +88,7 @@ public class GlobalExceptionHandler {
      */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiResponse<Void>> handleUnexpected(Exception exception) {
+        exception.printStackTrace(); // 建议在开发阶段打印堆栈，生产环境应使用日志框架
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(ApiResponse.fail("服务器内部错误"));
     }

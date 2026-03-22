@@ -1,6 +1,6 @@
 package com.involutionhell.backend.usercenter.controller;
 
-import org.springframework.security.access.prepost.PreAuthorize;
+import cn.dev33.satoken.annotation.SaCheckLogin;
 import com.involutionhell.backend.common.api.ApiResponse;
 import com.involutionhell.backend.usercenter.dto.LoginRequest;
 import com.involutionhell.backend.usercenter.dto.LoginResponse;
@@ -37,7 +37,7 @@ public class AuthController {
     /**
      * 退出当前登录会话。
      */
-    @PreAuthorize("isAuthenticated()")
+    @SaCheckLogin
     @PostMapping("/logout")
     public ApiResponse<Void> logout() {
         authService.logout();
@@ -47,7 +47,7 @@ public class AuthController {
     /**
      * 查询当前登录用户信息。
      */
-    @PreAuthorize("isAuthenticated()")
+    @SaCheckLogin
     @GetMapping("/me")
     public ApiResponse<UserView> currentUser() {
         return ApiResponse.ok(authService.currentUser());
