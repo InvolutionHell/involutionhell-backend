@@ -2,8 +2,9 @@ package com.involutionhell.backend.common.error;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import org.springframework.security.access.AccessDeniedException;
-import org.springframework.security.authentication.InsufficientAuthenticationException;
+import cn.dev33.satoken.exception.NotLoginException;
+import cn.dev33.satoken.exception.NotPermissionException;
+import cn.dev33.satoken.exception.NotRoleException;
 import com.involutionhell.backend.common.api.ApiResponse;
 import jakarta.validation.ConstraintViolationException;
 import jakarta.validation.Validation;
@@ -23,23 +24,33 @@ class GlobalExceptionHandlerTests {
     private final GlobalExceptionHandler handler = new GlobalExceptionHandler();
 
     @Test
-    void handleAuthenticationReturnsUnauthorized() {
-        ResponseEntity<ApiResponse<Void>> response = handler.handleAuthentication(
-                new InsufficientAuthenticationException("未登录")
+    void handleNotLoginExceptionReturnsUnauthorized() {
+        ResponseEntity<ApiResponse<Void>> response = handler.handleNotLoginException(
+                new NotLoginException("未登录", "login", NotLoginException.NOT_TOKEN)
         );
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
-        assertThat(response.getBody()).isEqualTo(ApiResponse.fail("未登录或登录状态已失效"));
+        assertThat(response.getBody().message()).isEqualTo("未提供 Token");
     }
 
     @Test
-    void handleAccessDeniedReturnsForbidden() {
-        ResponseEntity<ApiResponse<Void>> response = handler.handleAccessDenied(
-                new AccessDeniedException("拒绝访问")
+    void handleNotPermissionExceptionReturnsForbidden() {
+        ResponseEntity<ApiResponse<Void>> response = handler.handleNotPermissionException(
+                new NotPermissionException("p1")
         );
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-        assertThat(response.getBody().message()).isEqualTo("拒绝访问: 权限不足");
+        assertThat(response.getBody().message()).contains("拒绝访问: 缺少权限 [p1]");
+    }
+
+    @Test
+    void handleNotRoleExceptionReturnsForbidden() {
+        ResponseEntity<ApiResponse<Void>> response = handler.handleNotRoleException(
+                new NotRoleException("admin")
+        );
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+        assertThat(response.getBody().message()).contains("拒绝访问: 缺少角色 [admin]");
     }
 
     @Test

@@ -57,7 +57,7 @@ public class AuthService {
                     null, // ID 由数据库自动生成
                     githubUsername,
                     // 给第三方用户生成一个随机的超长密码，因为他们不需要用密码登录
-                    passwordService.encode(UUID.randomUUID().toString()),
+                    passwordService.hash(UUID.randomUUID().toString()),
                     // 优先使用 GitHub 的昵称，如果没有则使用其用户名
                     githubUser.getNickname() != null ? githubUser.getNickname() : githubUser.getUsername(),
                     true, // 默认启用
