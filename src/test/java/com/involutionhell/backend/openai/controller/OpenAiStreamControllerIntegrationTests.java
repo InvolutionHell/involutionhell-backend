@@ -27,7 +27,7 @@ class OpenAiStreamControllerIntegrationTests extends AbstractWebIntegrationTest 
     @Test
     void streamReturnsSseEventsForAuthenticatedUser() throws Exception {
         String token = loginAsAdmin();
-        MvcResult mvcResult = mockMvc.perform(post("/api/openai/responses/stream")
+        MvcResult mvcResult = mockMvc.perform(post("/openai/responses/stream")
                         .header("satoken", token)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
@@ -48,7 +48,7 @@ class OpenAiStreamControllerIntegrationTests extends AbstractWebIntegrationTest 
 
     @Test
     void streamRejectsAnonymousRequest() throws Exception {
-        mockMvc.perform(post("/api/openai/responses/stream")
+        mockMvc.perform(post("/openai/responses/stream")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
@@ -64,7 +64,7 @@ class OpenAiStreamControllerIntegrationTests extends AbstractWebIntegrationTest 
     void streamValidatesBlankMessage() throws Exception {
         String token = loginAsAdmin();
 
-        mockMvc.perform(post("/api/openai/responses/stream")
+        mockMvc.perform(post("/openai/responses/stream")
                         .header("satoken", token)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""

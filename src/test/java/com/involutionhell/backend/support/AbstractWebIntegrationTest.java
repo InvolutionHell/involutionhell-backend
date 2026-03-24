@@ -25,7 +25,7 @@ public abstract class AbstractWebIntegrationTest {
      * 使用指定账号登录并提取 Sa-Token 值。
      */
     protected String loginAndGetToken(String username, String password) throws Exception {
-        MvcResult result = mockMvc.perform(post("/api/auth/login")
+        MvcResult result = mockMvc.perform(post("/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {

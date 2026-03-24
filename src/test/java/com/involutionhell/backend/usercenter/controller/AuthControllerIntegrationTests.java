@@ -13,7 +13,7 @@ class AuthControllerIntegrationTests extends AbstractWebIntegrationTest {
 
     @Test
     void loginReturnsTokenAndCurrentUserInfo() throws Exception {
-        mockMvc.perform(post("/api/auth/login")
+        mockMvc.perform(post("/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
@@ -31,7 +31,7 @@ class AuthControllerIntegrationTests extends AbstractWebIntegrationTest {
 
     @Test
     void loginRejectsWrongPassword() throws Exception {
-        mockMvc.perform(post("/api/auth/login")
+        mockMvc.perform(post("/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
@@ -46,7 +46,7 @@ class AuthControllerIntegrationTests extends AbstractWebIntegrationTest {
 
     @Test
     void loginValidatesBlankUsername() throws Exception {
-        mockMvc.perform(post("/api/auth/login")
+        mockMvc.perform(post("/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
@@ -63,7 +63,7 @@ class AuthControllerIntegrationTests extends AbstractWebIntegrationTest {
     void meReturnsCurrentUserWhenLoggedIn() throws Exception {
         String token = loginAsAdmin();
 
-        mockMvc.perform(get("/api/auth/me").header("satoken", token))
+        mockMvc.perform(get("/auth/me").header("satoken", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true))
                 .andExpect(jsonPath("$.data.username").value("admin"))
@@ -72,7 +72,7 @@ class AuthControllerIntegrationTests extends AbstractWebIntegrationTest {
 
     @Test
     void meRejectsAnonymousRequest() throws Exception {
-        mockMvc.perform(get("/api/auth/me"))
+        mockMvc.perform(get("/auth/me"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.success").value(false))
                 .andExpect(jsonPath("$.message").value("未登录或登录状态已失效"));
@@ -82,19 +82,19 @@ class AuthControllerIntegrationTests extends AbstractWebIntegrationTest {
     void logoutSucceedsAndMakesTokenInvalid() throws Exception {
         String token = loginAsAdmin();
 
-        mockMvc.perform(post("/api/auth/logout").header("satoken", token))
+        mockMvc.perform(post("/auth/logout").header("satoken", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true))
                 .andExpect(jsonPath("$.message").value("退出成功"));
 
-        mockMvc.perform(get("/api/auth/me").header("satoken", token))
+        mockMvc.perform(get("/auth/me").header("satoken", token))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.success").value(false));
     }
 
     @Test
     void logoutRejectsAnonymousRequest() throws Exception {
-        mockMvc.perform(post("/api/auth/logout"))
+        mockMvc.perform(post("/auth/logout"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.success").value(false))
                 .andExpect(jsonPath("$.message").value("未登录或登录状态已失效"));

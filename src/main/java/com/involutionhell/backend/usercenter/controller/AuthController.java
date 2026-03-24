@@ -14,7 +14,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
-@RequestMapping("/api/auth")
+@RequestMapping("/auth")  // context-path 已含 /api/v1，此处不再重复加 /api 前缀
 public class AuthController {
 
     private final AuthService authService;

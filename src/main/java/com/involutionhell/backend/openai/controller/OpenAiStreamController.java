@@ -12,7 +12,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 @RestController
-@RequestMapping("/api/openai")
+@RequestMapping("/openai")  // context-path 已含 /api/v1，此处不再重复加 /api 前缀
 public class OpenAiStreamController {
 
     private final OpenAiStreamService openAiStreamService;

@@ -17,10 +17,12 @@ public class SaTokenConfigure implements WebMvcConfigurer {
         registry.addInterceptor(new SaInterceptor(handler -> {
             // 拦截规则配置
             SaRouter
-                .match("/**")    // 拦截所有路由
-                .notMatch("/api/auth/login")     // 排除登录接口
-                .notMatch("/api/auth/register")  // 排除注册接口      // 排除 Spring Boot 默认错误界面
-                .check(r -> StpUtil.checkLogin());  // 校验是否登录，如果未登录，这里会抛出 NotLoginException
+                .match("/**")                              // 拦截所有路由
+                .notMatch("/auth/login")                   // 账号密码登录
+                .notMatch("/auth/register")                // 注册
+                .notMatch("/oauth/render/github")          // GitHub OAuth 授权发起
+                .notMatch("/api/auth/callback/github")     // GitHub OAuth 回调（路径与 OAuth App 注册保持一致）
+                .check(r -> StpUtil.checkLogin());         // 未登录抛出 NotLoginException
         })).addPathPatterns("/**");
     }
 }
