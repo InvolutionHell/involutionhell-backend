@@ -1,6 +1,8 @@
 package com.involutionhell.backend.usercenter.repository;
 
 import com.involutionhell.backend.usercenter.model.UserAccount;
+
+import java.sql.PreparedStatement;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
@@ -8,6 +10,8 @@ import java.util.Optional;
 import java.util.Set;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
+import org.springframework.jdbc.support.GeneratedKeyHolder;
+import org.springframework.jdbc.support.KeyHolder;
 import org.springframework.stereotype.Repository;
 
 /**
@@ -62,6 +66,39 @@ public class JdbcUserAccountRepository implements UserAccountRepository {
                 joinSet(roles), joinSet(permissions), userId);
         return findById(userId)
                 .orElseThrow(() -> new IllegalArgumentException("用户不存在: " + userId));
+    }
+
+    @Override
+    public UserAccount insert(UserAccount userAccount) {
+        KeyHolder keyHolder = new GeneratedKeyHolder();
+        String sql = "INSERT INTO user_accounts (username, password_hash, display_name, enabled, roles, permissions) " +
+                     "VALUES (?, ?, ?, ?, ?, ?)";
+                     
+        jdbc.update(connection -> {
+            PreparedStatement ps = connection.prepareStatement(sql, new String[]{"id"});
+            ps.setString(1, userAccount.username());
+            ps.setString(2, userAccount.passwordHash());
+            ps.setString(3, userAccount.displayName());
+            ps.setBoolean(4, userAccount.enabled());
+            ps.setString(5, joinSet(userAccount.roles()));
+            ps.setString(6, joinSet(userAccount.permissions()));
+            return ps;
+        }, keyHolder);
+
+        Number key = keyHolder.getKey();
+        if (key == null) {
+            throw new IllegalStateException("插入用户失败，无法获取生成的 ID");
+        }
+        
+        return new UserAccount(
+                key.longValue(),
+                userAccount.username(),
+                userAccount.passwordHash(),
+                userAccount.displayName(),
+                userAccount.enabled(),
+                userAccount.roles(),
+                userAccount.permissions()
+        );
     }
 
     /**
