@@ -33,7 +33,10 @@ public class JdbcUserAccountRepository implements UserAccountRepository {
             rs.getString("display_name"),
             rs.getBoolean("enabled"),
             parseSet(rs.getString("roles")),
-            parseSet(rs.getString("permissions"))
+            parseSet(rs.getString("permissions")),
+            rs.getString("avatar_url"),
+            rs.getString("email"),
+            rs.getObject("github_id", Long.class)  // nullable Long
     );
 
     public JdbcUserAccountRepository(JdbcTemplate jdbc) {
@@ -71,9 +74,9 @@ public class JdbcUserAccountRepository implements UserAccountRepository {
     @Override
     public UserAccount insert(UserAccount userAccount) {
         KeyHolder keyHolder = new GeneratedKeyHolder();
-        String sql = "INSERT INTO user_accounts (username, password_hash, display_name, enabled, roles, permissions) " +
-                     "VALUES (?, ?, ?, ?, ?, ?)";
-                     
+        String sql = "INSERT INTO user_accounts (username, password_hash, display_name, enabled, roles, permissions, avatar_url, email, github_id) " +
+                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
+
         jdbc.update(connection -> {
             PreparedStatement ps = connection.prepareStatement(sql, new String[]{"id"});
             ps.setString(1, userAccount.username());
@@ -82,6 +85,10 @@ public class JdbcUserAccountRepository implements UserAccountRepository {
             ps.setBoolean(4, userAccount.enabled());
             ps.setString(5, joinSet(userAccount.roles()));
             ps.setString(6, joinSet(userAccount.permissions()));
+            ps.setString(7, userAccount.avatarUrl());
+            ps.setString(8, userAccount.email());
+            // github_id 可为 null，用 setObject 处理
+            ps.setObject(9, userAccount.githubId());
             return ps;
         }, keyHolder);
 
@@ -89,7 +96,7 @@ public class JdbcUserAccountRepository implements UserAccountRepository {
         if (key == null) {
             throw new IllegalStateException("插入用户失败，无法获取生成的 ID");
         }
-        
+
         return new UserAccount(
                 key.longValue(),
                 userAccount.username(),
@@ -97,8 +104,21 @@ public class JdbcUserAccountRepository implements UserAccountRepository {
                 userAccount.displayName(),
                 userAccount.enabled(),
                 userAccount.roles(),
-                userAccount.permissions()
+                userAccount.permissions(),
+                userAccount.avatarUrl(),
+                userAccount.email(),
+                userAccount.githubId()
         );
+    }
+
+    @Override
+    public UserAccount updateProfile(Long userId, String displayName, String avatarUrl, String email, Long githubId) {
+        // 每次 GitHub 用户登录时刷新其展示名称、头像、邮箱等资料
+        jdbc.update(
+                "UPDATE user_accounts SET display_name = ?, avatar_url = ?, email = ?, github_id = ? WHERE id = ?",
+                displayName, avatarUrl, email, githubId, userId);
+        return findById(userId)
+                .orElseThrow(() -> new IllegalArgumentException("用户不存在: " + userId));
     }
 
     /**

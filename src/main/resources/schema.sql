@@ -1,13 +1,17 @@
 -- Java 侧自管理的用户账号表（Sa-Token 认证，非 Auth.js OAuth 用户）
 -- 与 Prisma 管理的 users 表相互独立
 CREATE TABLE IF NOT EXISTS user_accounts (
-    id            BIGSERIAL PRIMARY KEY,
+    id            BIGSERIAL    PRIMARY KEY,
     username      VARCHAR(255) NOT NULL UNIQUE,
     password_hash VARCHAR(255) NOT NULL,
     display_name  VARCHAR(255),
     enabled       BOOLEAN      NOT NULL DEFAULT TRUE,
     roles         TEXT         NOT NULL DEFAULT '',
-    permissions   TEXT         NOT NULL DEFAULT ''
+    permissions   TEXT         NOT NULL DEFAULT '',
+    avatar_url    VARCHAR(500),
+    email         VARCHAR(255),
+    -- github_id 存储 GitHub 数字用户 ID，与 doc_contributors.github_id 对应
+    github_id     BIGINT       UNIQUE
 );
 
 -- 默认种子账号（已存在则跳过）

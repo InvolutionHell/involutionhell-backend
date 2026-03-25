@@ -11,7 +11,10 @@ public record UserAccount(
         String displayName,
         boolean enabled,
         Set<String> roles,
-        Set<String> permissions
+        Set<String> permissions,
+        String avatarUrl,   // GitHub 头像 URL
+        String email,       // GitHub 邮箱（可为 null，GitHub 用户可设为私密）
+        Long githubId       // GitHub 数字 ID，用于 doc_contributors 贡献者追踪
 ) {
 
     /**
@@ -26,7 +29,7 @@ public record UserAccount(
      * 基于当前用户信息生成一个新的授权快照。
      */
     public UserAccount withAuthorization(Set<String> newRoles, Set<String> newPermissions) {
-        return new UserAccount(id, username, passwordHash, displayName, enabled, newRoles, newPermissions);
+        return new UserAccount(id, username, passwordHash, displayName, enabled, newRoles, newPermissions, avatarUrl, email, githubId);
     }
 
     /**
