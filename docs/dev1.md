@@ -47,6 +47,37 @@
 
 ---
 
+## 前后端职责分工现状（2026-03-26）
+
+### 已迁移到后端
+
+| 功能 | 迁移前 | 迁移后 |
+|------|--------|--------|
+| GitHub OAuth 登录 | NextAuth（前端） | JustAuth + Sa-Token（后端） |
+| 会话管理 | NextAuth Session / Prisma `sessions` | Sa-Token `user_accounts` |
+| 用户数据 | Prisma `users` 表 | `user_accounts` 表 |
+
+### 前端 API Route 现状
+
+| 路由 | 说明 | 状态 |
+|------|------|------|
+| `api/chat` | AI 对话，直接调外部 AI API | ⚠️ 与后端 `/openai` 重复，待统一 |
+| `api/analytics` | 埋点写 Neon | 暂留前端，功能自洽 |
+| `api/upload` | 上传到 Cloudflare R2 | 暂留前端，功能自洽 |
+| `api/suggestions` | AI 生成建议问题 | 暂留前端 |
+| `api/docs-tree` | Fumadocs 文档导航树 | 不迁移，Fumadocs 专属 |
+| `api/indexnow` | SEO ping | 不迁移，构建侧逻辑 |
+
+### TODO：Chat 双实现问题
+
+**现象：** 后端已有 `OpenAiStreamController`（`/openai`），前端 `app/api/chat/route.ts` 是完全平行的另一套实现，两者均直接调 AI 接口，AI API Key 和模型配置分散在前后端各一份。
+
+**方案：** 让前端 `/api/chat` 通过 Next.js rewrite proxy 到后端 `/openai`，AI Key 统一在后端配置，前端不再接触。实现方式与认证迁移一致。
+
+**优先级：** 低，暂不处理。
+
+---
+
 ## Sa-Token 会话流程
 
 ```
