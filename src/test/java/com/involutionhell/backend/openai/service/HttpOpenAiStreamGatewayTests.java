@@ -40,15 +40,18 @@ class HttpOpenAiStreamGatewayTests {
     private final RecordingHttpClient httpClient = new RecordingHttpClient();
     private final ObjectMapper objectMapper = new ObjectMapper();
 
+    private OpenAiStreamRequest createMockRequest(String model) {
+        return new OpenAiStreamRequest(List.of(new OpenAiStreamRequest.Message("user", "你好")), model);
+    }
+
     @Test
     void validateConfigurationRejectsMissingEnvironmentValues() {
         HttpOpenAiStreamGateway gateway = new HttpOpenAiStreamGateway(
                 httpClient,
                 objectMapper,
-                new OpenAiProperties("", "", "")
-        );
+                new OpenAiProperties("", "", ""));
 
-        assertThatThrownBy(() -> gateway.validateConfiguration(new OpenAiStreamRequest("你好", null, null)))
+        assertThatThrownBy(() -> gateway.validateConfiguration(createMockRequest(null)))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage("OPENAI_API_URL 未配置");
     }
@@ -58,23 +61,20 @@ class HttpOpenAiStreamGatewayTests {
         HttpOpenAiStreamGateway gateway = new HttpOpenAiStreamGateway(
                 httpClient,
                 objectMapper,
-                new OpenAiProperties("https://api.openai.com/v1/responses", "test-key", "gpt-4.1")
-        );
+                new OpenAiProperties("https://api.openai.com/v1", "test-key", "gpt-4.1"));
         ByteArrayInputStream body = new ByteArrayInputStream("data: [DONE]\n\n".getBytes(StandardCharsets.UTF_8));
         httpClient.response = new StubHttpResponse(200, body);
 
-        InputStream result = gateway.openStream(new OpenAiStreamRequest("你好", "请简洁回答", null));
+        InputStream result = gateway.openStream(createMockRequest(null));
         HttpRequest capturedRequest = httpClient.lastRequest;
         assertThat(result).isSameAs(body);
-        assertThat(capturedRequest.uri().toString()).isEqualTo("https://api.openai.com/v1/responses");
+        assertThat(capturedRequest.uri().toString()).isEqualTo("https://api.openai.com/v1/chat/completions");
         assertThat(capturedRequest.headers().firstValue("Authorization")).hasValue("Bearer test-key");
         assertThat(capturedRequest.headers().firstValue("Accept")).hasValue("text/event-stream");
         assertThat(readRequestBody(capturedRequest))
                 .contains("\"stream\":true")
                 .contains("\"model\":\"gpt-4.1\"")
-                .contains("\"instructions\":\"请简洁回答\"")
-                .contains("\"type\":\"input_text\"")
-                .contains("\"text\":\"你好\"");
+                .contains("\"messages\":[{\"role\":\"user\",\"content\":\"你好\"}]");
     }
 
     @Test
@@ -82,14 +82,12 @@ class HttpOpenAiStreamGatewayTests {
         HttpOpenAiStreamGateway gateway = new HttpOpenAiStreamGateway(
                 httpClient,
                 objectMapper,
-                new OpenAiProperties("https://api.openai.com/v1/responses", "test-key", "gpt-4.1")
-        );
+                new OpenAiProperties("https://api.openai.com/v1", "test-key", "gpt-4.1"));
         httpClient.response = new StubHttpResponse(
                 200,
-                new ByteArrayInputStream("data: [DONE]\n\n".getBytes(StandardCharsets.UTF_8))
-        );
+                new ByteArrayInputStream("data: [DONE]\n\n".getBytes(StandardCharsets.UTF_8)));
 
-        gateway.openStream(new OpenAiStreamRequest("你好", null, "gpt-5"));
+        gateway.openStream(createMockRequest("gpt-5"));
 
         assertThat(readRequestBody(httpClient.lastRequest)).contains("\"model\":\"gpt-5\"");
     }
@@ -99,13 +97,12 @@ class HttpOpenAiStreamGatewayTests {
         HttpOpenAiStreamGateway gateway = new HttpOpenAiStreamGateway(
                 httpClient,
                 objectMapper,
-                new OpenAiProperties("https://api.openai.com/v1/responses", "test-key", "gpt-4.1")
-        );
+                new OpenAiProperties("https://api.openai.com/v1", "test-key", "gpt-4.1"));
         httpClient.response = new StubHttpResponse(401, new ByteArrayInputStream("""
                 {"error":{"message":"Invalid API key"}}
                 """.getBytes(StandardCharsets.UTF_8)));
 
-        assertThatThrownBy(() -> gateway.openStream(new OpenAiStreamRequest("你好", null, null)))
+        assertThatThrownBy(() -> gateway.openStream(createMockRequest(null)))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("HTTP 401")
                 .hasMessageContaining("Invalid API key");
@@ -215,8 +212,7 @@ class HttpOpenAiStreamGatewayTests {
         @Override
         public <T> CompletableFuture<HttpResponse<T>> sendAsync(
                 HttpRequest request,
-                HttpResponse.BodyHandler<T> responseBodyHandler
-        ) {
+                HttpResponse.BodyHandler<T> responseBodyHandler) {
             throw new UnsupportedOperationException();
         }
 
@@ -224,8 +220,7 @@ class HttpOpenAiStreamGatewayTests {
         public <T> CompletableFuture<HttpResponse<T>> sendAsync(
                 HttpRequest request,
                 HttpResponse.BodyHandler<T> responseBodyHandler,
-                HttpResponse.PushPromiseHandler<T> pushPromiseHandler
-        ) {
+                HttpResponse.PushPromiseHandler<T> pushPromiseHandler) {
             throw new UnsupportedOperationException();
         }
     }

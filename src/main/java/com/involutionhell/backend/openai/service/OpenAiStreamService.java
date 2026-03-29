@@ -5,12 +5,10 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
-import java.util.Map;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
-import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
-import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
@@ -20,177 +18,97 @@ public class OpenAiStreamService {
     private final OpenAiStreamGateway gateway;
     private final ObjectMapper objectMapper;
 
-    /**
-     * 创建 OpenAI 流式服务并注入上游网关和 JSON 工具。
-     */
     public OpenAiStreamService(OpenAiStreamGateway gateway, ObjectMapper objectMapper) {
         this.gateway = gateway;
         this.objectMapper = objectMapper;
     }
 
     /**
-     * 创建一个新的 SSE 推送通道并异步转发 OpenAI 的流式响应。
+     * 开启上游请求并把结果实时桥接至指定的 HTTP 响应输出流。
      */
-    public SseEmitter stream(OpenAiStreamRequest request) {
+    public void streamToOutputStream(OpenAiStreamRequest request, OutputStream outputStream) {
+        /*
+         * ============================
+         * 🗑️ 旧版本 SseEmitter 打包人逻辑（直接导致 Vercel 不认字）：
+         * public SseEmitter stream(OpenAiStreamRequest request) { ...
+         * SseEmitter emitter = new SseEmitter(0L);
+         * OpenAiEventSink sink = new SseEmitterOpenAiEventSink(emitter);
+         * ... 开启 VirtualThread 扔到后台去 dispatchEvent()
+         * return emitter;
+         * ============================
+         */
+
         gateway.validateConfiguration(request);
-
-        SseEmitter emitter = new SseEmitter(0L);
-        OpenAiEventSink sink = new SseEmitterOpenAiEventSink(emitter);
-        Thread.ofVirtual()
-                .name("openai-sse-", 0)
-                .start(() -> streamToSink(request, sink));
-        return emitter;
-    }
-
-    /**
-     * 将单次 OpenAI 流式请求转发到指定事件下游。
-     */
-    void streamToSink(OpenAiStreamRequest request, OpenAiEventSink sink) {
         try (InputStream inputStream = gateway.openStream(request)) {
-            relayEvents(inputStream, sink);
-            sink.complete();
+            relayEvents(inputStream, outputStream);
         } catch (Exception exception) {
-            handleStreamError(exception, sink);
+            handleStreamError(exception, outputStream);
         }
     }
 
     /**
-     * 解析 OpenAI 返回的 SSE 文本流并逐条转发给前端。
+     * 【重构核心】：这是拦截并转译第三方生硬大模型 JSON 的“文字切割手术台”。
+     * 该方法提取有价值的短文本切片，将其打包为 Vercel 能识别的前置格式。
      */
-    void relayEvents(InputStream inputStream, OpenAiEventSink sink) throws IOException {
+    void relayEvents(InputStream inputStream, OutputStream outputStream) throws IOException {
+        /*
+         * ============================
+         * 🗑️ 旧版纯粹转发、不对核心做精洗的代码路线：
+         * String currentEventName = null;
+         * StringBuilder currentData = new StringBuilder();
+         * while ((line = reader.readLine()) != null) { ... 只要遇到 data 就全部原样拼接通过
+         * EventEmitter 发送 ... }
+         * ============================
+         */
+
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, StandardCharsets.UTF_8))) {
             String line;
-            String currentEventName = null;
-            StringBuilder currentData = new StringBuilder();
-
             while ((line = reader.readLine()) != null) {
-                if (line.isBlank()) {
-                    if (dispatchEvent(currentEventName, currentData, sink)) {
-                        return;
+                // 第三方接口返回的标准特征点都是以 "data: " 开头
+                if (line.startsWith("data: ")) {
+                    String payload = line.substring(6).trim();
+
+                    // "[DONE]" 形态意味着大模型生成句号完毕，立刻跳出断开连接
+                    if ("[DONE]".equals(payload)) {
+                        break;
                     }
-                    currentEventName = null;
-                    currentData.setLength(0);
-                    continue;
-                }
-                if (line.startsWith(":")) {
-                    continue;
-                }
-                if (line.startsWith("event:")) {
-                    currentEventName = line.substring("event:".length()).trim();
-                    continue;
-                }
-                if (line.startsWith("data:")) {
-                    if (currentData.length() > 0) {
-                        currentData.append('\n');
+                    try {
+                        JsonNode jsonNode = objectMapper.readTree(payload);
+
+                        // 深入臃肿的大树内部：直接去 choices 第一组的 delta 里面寻找关键节点唯一的 content
+                        JsonNode deltaNode = jsonNode.path("choices").path(0).path("delta").path("content");
+
+                        // 并不是所有的 JSON 都有字（第一包可能只包含角色分配）
+                        if (!deltaNode.isMissingNode() && deltaNode.isTextual()) {
+                            String textChunk = deltaNode.asText();
+                            // ★ 最为关键的协议转译：对原生纯文本加上 Vercel Stream Text 前导符 '0:' 结合 JSON_Escaped_String 和强回车。
+                            String vercelChunk = "0:" + objectMapper.writeValueAsString(textChunk) + "\n";
+
+                            outputStream.write(vercelChunk.getBytes(StandardCharsets.UTF_8));
+                            // 高频推送缓冲区，使前端能产生实时的视觉卡顿流水效果！
+                            outputStream.flush();
+                        }
+                    } catch (Exception ignored) {
+                        // 出于防守目的，故意默默捕捉并忽略空包异常，而不让流水中断。
                     }
-                    currentData.append(line.substring("data:".length()).stripLeading());
                 }
             }
-
-            dispatchEvent(currentEventName, currentData, sink);
         }
     }
 
     /**
-     * 发送单条已组装完成的 SSE 事件，并在完成事件出现时终止读取循环。
+     * 当前端断连或网络奔溃时，向流下发 Vercel 专门容错的错误前导符标识 'e:' 使得前端抛出红字。
      */
-    private boolean dispatchEvent(String explicitEventName, StringBuilder dataBuffer, OpenAiEventSink sink)
-            throws IOException {
-        if (dataBuffer.length() == 0) {
-            return false;
-        }
-
-        String payload = dataBuffer.toString();
-        if ("[DONE]".equals(payload)) {
-            sink.send("done", payload);
-            return true;
-        }
-
-        String eventName = resolveEventName(explicitEventName, payload);
-        sink.send(eventName, payload);
-        return "response.completed".equals(eventName) || "response.failed".equals(eventName);
-    }
-
-    /**
-     * 从 OpenAI 返回的 JSON 负载中推断事件名，显式事件名优先。
-     */
-    private String resolveEventName(String explicitEventName, String payload) {
-        if (StringUtils.hasText(explicitEventName)) {
-            return explicitEventName;
-        }
-        try {
-            JsonNode jsonNode = objectMapper.readTree(payload);
-            if (jsonNode.hasNonNull("type")) {
-                return jsonNode.get("type").asText();
-            }
-        } catch (JacksonException ignored) {
-            // 如果当前数据不是 JSON，则退回到默认 SSE 事件名。
-        }
-        return "message";
-    }
-
-    /**
-     * 将上游异常转换为 SSE error 事件，并正确结束当前推送。
-     */
-    private void handleStreamError(Exception exception, OpenAiEventSink sink) {
+    private void handleStreamError(Exception exception, OutputStream outputStream) {
         if (exception instanceof InterruptedException) {
             Thread.currentThread().interrupt();
         }
         try {
-            sink.send("error", serializeError(exception));
+            String message = StringUtils.hasText(exception.getMessage()) ? exception.getMessage() : "OpenAI Error";
+            String errorChunk = "e:" + objectMapper.writeValueAsString(message) + "\n";
+            outputStream.write(errorChunk.getBytes(StandardCharsets.UTF_8));
+            outputStream.flush();
         } catch (IOException ignored) {
-            // 下游连接已断开时不再重复抛错。
-        }
-        sink.completeWithError(exception);
-    }
-
-    /**
-     * 把异常信息包装为统一的 JSON 文本，便于前端直接消费。
-     */
-    private String serializeError(Exception exception) {
-        try {
-            return objectMapper.writeValueAsString(Map.of(
-                    "message",
-                    StringUtils.hasText(exception.getMessage()) ? exception.getMessage() : "OpenAI 流式调用失败"
-            ));
-        } catch (JacksonException jsonProcessingException) {
-            return "{\"message\":\"OpenAI 流式调用失败\"}";
-        }
-    }
-
-    private static final class SseEmitterOpenAiEventSink implements OpenAiEventSink {
-
-        private final SseEmitter emitter;
-
-        /**
-         * 使用 Spring MVC 的 SseEmitter 适配下游事件发送能力。
-         */
-        private SseEmitterOpenAiEventSink(SseEmitter emitter) {
-            this.emitter = emitter;
-        }
-
-        /**
-         * 发送一条带事件名的 SSE 消息。
-         */
-        @Override
-        public void send(String eventName, String data) throws IOException {
-            emitter.send(SseEmitter.event().name(eventName).data(data));
-        }
-
-        /**
-         * 正常完成当前 SSE 响应。
-         */
-        @Override
-        public void complete() {
-            emitter.complete();
-        }
-
-        /**
-         * 以异常状态结束当前 SSE 响应。
-         */
-        @Override
-        public void completeWithError(Throwable throwable) {
-            emitter.completeWithError(throwable);
         }
     }
 }

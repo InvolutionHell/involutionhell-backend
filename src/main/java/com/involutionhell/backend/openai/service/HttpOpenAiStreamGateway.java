@@ -30,8 +30,7 @@ public class HttpOpenAiStreamGateway implements OpenAiStreamGateway {
     public HttpOpenAiStreamGateway(
             HttpClient httpClient,
             ObjectMapper objectMapper,
-            OpenAiProperties properties
-    ) {
+            OpenAiProperties properties) {
         this.httpClient = httpClient;
         this.objectMapper = objectMapper;
         this.properties = properties;
@@ -64,39 +63,60 @@ public class HttpOpenAiStreamGateway implements OpenAiStreamGateway {
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
             try (InputStream errorStream = response.body()) {
                 throw new IllegalStateException(
-                        "OpenAI 调用失败: HTTP " + response.statusCode() + " - " + abbreviateErrorBody(errorStream)
-                );
+                        "OpenAI 调用失败: HTTP " + response.statusCode() + " - " + abbreviateErrorBody(errorStream));
             }
         }
         return response.body();
     }
 
     /**
-     * 按照 OpenAI Responses API 请求格式构造流式请求体。
+     * 按照 OpenAI 标准的 /chat/completions 格式构造全套流式请求体。
+     * 直接透传完整的 messages 数组，实现真正意义上的上下文多轮理解。
      */
     String buildRequestBody(OpenAiStreamRequest request) {
         Map<String, Object> requestBody = new LinkedHashMap<>();
         requestBody.put("model", resolveModel(request));
-        requestBody.put("stream", true);
-        requestBody.put("input", List.of(Map.of(
-                "role", "user",
-                "content", List.of(Map.of(
-                        "type", "input_text",
-                        "text", request.message()
-                ))
-        )));
+        requestBody.put("stream", true); // 指定官方进行实时切片下发
 
-        if (StringUtils.hasText(request.instructions())) {
-            requestBody.put("instructions", request.instructions());
+        /*
+         * ============================
+         * 🗑️ 被废弃的畸形伪造格式旧码：
+         * requestBody.put("input", List.of(Map.of("role", "user", "content", ... 嵌套 ...
+         * )));
+         * if (StringUtils.hasText(request.instructions())) {
+         * requestBody.put("instructions", request.instructions());
+         * }
+         * ============================
+         */
+
+        requestBody.put("messages", request.messages());
+
+        try {
+            return objectMapper.writeValueAsString(requestBody);
+        } catch (Exception e) {
+            throw new IllegalStateException("请求序列化失败", e);
         }
-        return objectMapper.writeValueAsString(requestBody);
     }
 
     /**
-     * 构造访问 OpenAI Responses API 的 HTTP 请求。
+     * 构造发往远端（或中转代理）大模型的真实 HTTP 报文。
      */
     HttpRequest buildHttpRequest(String requestBody) {
-        return HttpRequest.newBuilder(URI.create(properties.apiUrl()))
+        String apiUrl = properties.apiUrl();
+        // 自动容错：如果环境变量里仅配置了根基地址，自动帮忙拼接聊天补全入口。
+        if (!apiUrl.endsWith("/chat/completions")) {
+            apiUrl = apiUrl.replaceAll("/+$", "") + "/chat/completions";
+        }
+
+        /*
+         * ============================
+         * 🗑️ 被废弃的基础发包旧路径（因强依赖 properties 没有保护校验）：
+         * return HttpRequest.newBuilder(URI.create(properties.apiUrl()))
+         * ============================
+         */
+
+        return HttpRequest.newBuilder(URI.create(apiUrl))
+                // 重点保护区：只有 Java 这里碰到了真实密钥。
                 .header("Authorization", "Bearer " + properties.apiKey())
                 .header("Content-Type", "application/json")
                 .header("Accept", "text/event-stream")
