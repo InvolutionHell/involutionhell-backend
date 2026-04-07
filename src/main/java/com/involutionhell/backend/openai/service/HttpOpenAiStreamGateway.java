@@ -13,12 +13,17 @@ import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import jakarta.annotation.PostConstruct;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import tools.jackson.databind.ObjectMapper;
 
 @Service
 public class HttpOpenAiStreamGateway implements OpenAiStreamGateway {
+
+    private static final Logger log = LoggerFactory.getLogger(HttpOpenAiStreamGateway.class);
 
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
@@ -34,6 +39,13 @@ public class HttpOpenAiStreamGateway implements OpenAiStreamGateway {
         this.httpClient = httpClient;
         this.objectMapper = objectMapper;
         this.properties = properties;
+    }
+
+    @PostConstruct
+    void warnIfNotConfigured() {
+        if (!StringUtils.hasText(properties.apiKey())) {
+            log.warn("[OpenAI] OPENAI_API_KEY 未配置，/openai/responses/stream 调用时将返回 400 错误");
+        }
     }
 
     /**
