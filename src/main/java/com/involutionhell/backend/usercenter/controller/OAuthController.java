@@ -80,9 +80,10 @@ public class OAuthController {
             // 返回的 LoginResponse 包含 tokenName、tokenValue 和用户视图
             LoginResponse loginResponse = authService.loginByGithub(authUser);
 
-            // 登录成功后重定向到前端，将 token 作为 URL 参数传给前端
-            // 前端读取 ?token= 参数后存入 localStorage，并清除 URL 中的参数
-            String redirectUrl = frontEndUrl + "/?token=" + loginResponse.tokenValue();
+            // 登录成功后重定向到前端，将 token 放在 URL fragment（#token=）中传给前端
+            // fragment 不会出现在服务器日志和 Referer 头中，避免 token 泄露
+            // 前端读取 #token= 参数后存入 localStorage，并清除 URL 中的 fragment
+            String redirectUrl = frontEndUrl + "/#token=" + loginResponse.tokenValue();
             response.sendRedirect(redirectUrl);
         } else {
             // 登录失败，重定向回前端并带上错误信息
