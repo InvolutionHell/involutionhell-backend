@@ -47,7 +47,7 @@
 
 ---
 
-## 前后端职责分工现状（2026-03-26）
+## 前后端职责分工现状（2026-03-29）
 
 ### 已迁移到后端
 
@@ -61,20 +61,20 @@
 
 | 路由 | 说明 | 状态 |
 |------|------|------|
-| `api/chat` | AI 对话，直接调外部 AI API | ⚠️ 与后端 `/openai` 重复，待统一 |
+| `api/chat` | AI 对话，优先代理到后端 `/openai/responses/stream`，失败时 fallback 本地推理 | ⚠️ AI Key 仍分散在前后端，待统一 |
 | `api/analytics` | 埋点写 Neon | 暂留前端，功能自洽 |
 | `api/upload` | 上传到 Cloudflare R2 | 暂留前端，功能自洽 |
 | `api/suggestions` | AI 生成建议问题 | 暂留前端 |
 | `api/docs-tree` | Fumadocs 文档导航树 | 不迁移，Fumadocs 专属 |
 | `api/indexnow` | SEO ping | 不迁移，构建侧逻辑 |
 
-### TODO：Chat 双实现问题
+### TODO：Chat AI Key 统一
 
-**现象：** 后端已有 `OpenAiStreamController`（`/openai`），前端 `app/api/chat/route.ts` 是完全平行的另一套实现，两者均直接调 AI 接口，AI API Key 和模型配置分散在前后端各一份。
+**现状：** 前端 `/api/chat` 已优先尝试代理到后端 `/openai/responses/stream`（5s 超时），失败时 fallback 到本地 Vercel AI SDK 推理。代理路径已打通，但 fallback 仍依赖前端自己的 AI Key 和模型配置。
 
-**方案：** 让前端 `/api/chat` 通过 Next.js rewrite proxy 到后端 `/openai`，AI Key 统一在后端配置，前端不再接触。实现方式与认证迁移一致。
+**剩余工作：** 确认后端 `/openai/responses/stream` 稳定后，删除前端 fallback 逻辑，移除前端侧 AI Key 配置，AI 推理完全由后端负责。
 
-**优先级：** 低，暂不处理。
+**优先级：** 低，待后端 AI 接口稳定后处理。
 
 ---
 
