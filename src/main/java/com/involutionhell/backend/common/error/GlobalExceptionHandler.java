@@ -46,7 +46,7 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(NotPermissionException.class)
     public ResponseEntity<ApiResponse<Void>> handleNotPermissionException(NotPermissionException e) {
         return ResponseEntity.status(HttpStatus.FORBIDDEN)
-                .body(ApiResponse.fail("拒绝访问: 缺少权限 [" + e.getCode() + "]"));
+                .body(ApiResponse.fail("拒绝访问: 缺少权限 [" + e.getPermission() + "]"));
     }
 
     /**

@@ -16,7 +16,7 @@ class UserCenterControllerIntegrationTests extends AbstractWebIntegrationTest {
     void profileReturnsCurrentUserForAuthorizedUser() throws Exception {
         String token = loginAsAlice();
 
-        mockMvc.perform(get("/api/user-center/profile").header("satoken", token))
+        mockMvc.perform(get("/auth/me").header("satoken", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true))
                 .andExpect(jsonPath("$.data.username").value("alice"));
@@ -26,7 +26,7 @@ class UserCenterControllerIntegrationTests extends AbstractWebIntegrationTest {
     void usersListReturnsAllUsersForAdmin() throws Exception {
         String token = loginAsAdmin();
 
-        mockMvc.perform(get("/api/user-center/users").header("satoken", token))
+        mockMvc.perform(get("/users").header("satoken", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true))
                 .andExpect(jsonPath("$.data.length()").value(3));
@@ -36,17 +36,17 @@ class UserCenterControllerIntegrationTests extends AbstractWebIntegrationTest {
     void usersListRejectsUserWithoutReadPermission() throws Exception {
         String token = loginAsAlice();
 
-        mockMvc.perform(get("/api/user-center/users").header("satoken", token))
+        mockMvc.perform(get("/users").header("satoken", token))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.success").value(false))
-                .andExpect(jsonPath("$.message").value("无权限访问: user:center:read"));
+                .andExpect(jsonPath("$.message").value("拒绝访问: 缺少权限 [user:center:read]"));
     }
 
     @Test
     void getUserReturnsRequestedUserForAuditor() throws Exception {
         String token = loginAsAuditor();
 
-        mockMvc.perform(get("/api/user-center/users/2").header("satoken", token))
+        mockMvc.perform(get("/users/2").header("satoken", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true))
                 .andExpect(jsonPath("$.data.username").value("alice"));
@@ -54,7 +54,7 @@ class UserCenterControllerIntegrationTests extends AbstractWebIntegrationTest {
 
     @Test
     void getUserRejectsAnonymousRequest() throws Exception {
-        mockMvc.perform(get("/api/user-center/users/1"))
+        mockMvc.perform(get("/users/1"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.success").value(false));
     }
@@ -63,7 +63,7 @@ class UserCenterControllerIntegrationTests extends AbstractWebIntegrationTest {
     void getUserReturnsBusinessErrorWhenUserMissing() throws Exception {
         String token = loginAsAdmin();
 
-        mockMvc.perform(get("/api/user-center/users/999").header("satoken", token))
+        mockMvc.perform(get("/users/999").header("satoken", token))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.success").value(false))
                 .andExpect(jsonPath("$.message").value("用户不存在: 999"));
@@ -74,7 +74,7 @@ class UserCenterControllerIntegrationTests extends AbstractWebIntegrationTest {
     void updateAuthorizationAllowsAdmin() throws Exception {
         String token = loginAsAdmin();
 
-        mockMvc.perform(put("/api/user-center/users/2/authorization")
+        mockMvc.perform(put("/users/2/authorization")
                         .header("satoken", token)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
@@ -89,7 +89,7 @@ class UserCenterControllerIntegrationTests extends AbstractWebIntegrationTest {
                 .andExpect(jsonPath("$.data.roles.length()").value(2))
                 .andExpect(jsonPath("$.data.permissions.length()").value(2));
 
-        mockMvc.perform(get("/api/user-center/users/2").header("satoken", token))
+        mockMvc.perform(get("/users/2").header("satoken", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.roles.length()").value(2))
                 .andExpect(jsonPath("$.data.permissions.length()").value(2));
@@ -97,7 +97,7 @@ class UserCenterControllerIntegrationTests extends AbstractWebIntegrationTest {
 
     @Test
     void updateAuthorizationRejectsAnonymousRequest() throws Exception {
-        mockMvc.perform(put("/api/user-center/users/2/authorization")
+        mockMvc.perform(put("/users/2/authorization")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
@@ -113,7 +113,7 @@ class UserCenterControllerIntegrationTests extends AbstractWebIntegrationTest {
     void updateAuthorizationRejectsUserWithoutManagePermission() throws Exception {
         String token = loginAsAlice();
 
-        mockMvc.perform(put("/api/user-center/users/2/authorization")
+        mockMvc.perform(put("/users/2/authorization")
                         .header("satoken", token)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
@@ -124,6 +124,6 @@ class UserCenterControllerIntegrationTests extends AbstractWebIntegrationTest {
                                 """))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.success").value(false))
-                .andExpect(jsonPath("$.message").value("无权限访问: user:center:manage"));
+                .andExpect(jsonPath("$.message").value("拒绝访问: 缺少权限 [user:center:manage]"));
     }
 }

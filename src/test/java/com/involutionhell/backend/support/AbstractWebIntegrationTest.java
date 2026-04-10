@@ -13,7 +13,21 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
-@SpringBootTest
+// 显式指定 H2 内存库配置，优先级高于环境变量（如 SPRING_DATASOURCE_URL），
+// 确保集成测试始终使用 H2 而非生产 PostgreSQL 连接。
+@SpringBootTest(properties = {
+        "spring.datasource.url=jdbc:h2:mem:backend;MODE=PostgreSQL;DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE",
+        "spring.datasource.username=sa",
+        "spring.datasource.password=",
+        "spring.datasource.driver-class-name=org.h2.Driver",
+        "spring.sql.init.mode=always",
+        "spring.sql.init.schema-locations=classpath:test-schema.sql",
+        // JustAuth 使用 Apache Commons UrlValidator 校验 redirect-uri，默认拒绝 localhost。
+        // 测试环境使用合法格式的占位 URL，不影响实际网络请求。
+        "justauth.type.github.redirect-uri=https://example.com/api/auth/callback/github",
+        "justauth.type.github.client-id=test-client-id",
+        "justauth.type.github.client-secret=test-client-secret"
+})
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 public abstract class AbstractWebIntegrationTest {

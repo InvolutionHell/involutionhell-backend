@@ -75,7 +75,7 @@ class AuthControllerIntegrationTests extends AbstractWebIntegrationTest {
         mockMvc.perform(get("/auth/me"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.success").value(false))
-                .andExpect(jsonPath("$.message").value("未登录或登录状态已失效"));
+                .andExpect(jsonPath("$.message").value("未提供 Token"));
     }
 
     @Test
@@ -97,6 +97,6 @@ class AuthControllerIntegrationTests extends AbstractWebIntegrationTest {
         mockMvc.perform(post("/auth/logout"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.success").value(false))
-                .andExpect(jsonPath("$.message").value("未登录或登录状态已失效"));
+                .andExpect(jsonPath("$.message").value("未提供 Token"));
     }
 }
