@@ -12,7 +12,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
@@ -69,7 +69,12 @@ public class OAuthController {
      * GitHub → localhost:3000/api/auth/callback/github → Next.js rewrite → localhost:8080/api/auth/callback/github
      */
     @GetMapping("/api/auth/callback/github")
-    public void login(AuthCallback callback, HttpServletResponse response) throws IOException {
+    public void login(@RequestParam String code,
+                      @RequestParam String state,
+                      HttpServletResponse response) throws IOException {
+        AuthCallback callback = new AuthCallback();
+        callback.setCode(code);
+        callback.setState(state);
         AuthRequest authRequest = getAuthRequest();
         AuthResponse<?> authResponse = authRequest.login(callback);
         
