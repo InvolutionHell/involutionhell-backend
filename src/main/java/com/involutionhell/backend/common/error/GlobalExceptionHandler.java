@@ -41,12 +41,17 @@ public class GlobalExceptionHandler {
     }
 
     /**
-     * Sa-Token: 拦截权限不足异常
+     * Sa-Token: 拦截权限不足异常。
+     *
+     * 注意要用 e.getPermission() 而不是 e.getCode()。
+     * getCode() 是父类 SaTokenException 的方法，返回的是整数场景码（比如 -1），
+     * 而权限字符串（比如 "user:center:read"）在 NotPermissionException 自己的 permission 字段里，
+     * 要调 getPermission() 才能拿到。用错了的话错误消息会变成 "拒绝访问: 缺少权限 [-1]"，没有任何意义。
      */
     @ExceptionHandler(NotPermissionException.class)
     public ResponseEntity<ApiResponse<Void>> handleNotPermissionException(NotPermissionException e) {
         return ResponseEntity.status(HttpStatus.FORBIDDEN)
-                .body(ApiResponse.fail("拒绝访问: 缺少权限 [" + e.getCode() + "]"));
+                .body(ApiResponse.fail("拒绝访问: 缺少权限 [" + e.getPermission() + "]"));
     }
 
     /**

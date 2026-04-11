@@ -1,0 +1,95 @@
+package com.involutionhell.backend.usercenter.controller;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.redirectedUrlPattern;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+import com.involutionhell.backend.support.AbstractWebIntegrationTest;
+import org.junit.jupiter.api.Test;
+import org.springframework.test.web.servlet.MvcResult;
+
+/**
+ * OAuthController 集成测试。
+ *
+ * 设计说明：
+ * OAuthController 在内部通过 @Value 属性直接 new AuthGithubRequest()，
+ * 无法通过依赖注入替换 JustAuth 的 AuthRequest 实现。
+ * 因此本测试仅覆盖以下可验证的行为：
+ *   1. renderAuth   —— JustAuth 在本地构建授权 URL，无实际 HTTP 调用，可直接验证 302 重定向。
+ *   2. callback 失败路径 —— 携带无效 state/code 时，JustAuth 返回失败响应，
+ *                          控制器重定向至前端错误页。
+ *
+ * callback 成功路径（需要真实 GitHub code + state）超出集成测试范围，
+ * 该路径的业务逻辑已由 AuthServiceTests.loginByGithub*() 系列单元测试覆盖。
+ */
+class OAuthControllerIntegrationTests extends AbstractWebIntegrationTest {
+
+    // =============================================
+    // GET /oauth/render/github — 发起授权跳转
+    // =============================================
+
+    @Test
+    void renderAuthRedirectsToGitHubAuthorizationUrl() throws Exception {
+        MvcResult result = mockMvc.perform(get("/oauth/render/github"))
+                .andExpect(status().is3xxRedirection())
+                .andReturn();
+
+        String location = result.getResponse().getRedirectedUrl();
+        assertThat(location)
+                .as("授权重定向地址应指向 GitHub OAuth 授权端点")
+                .isNotNull()
+                .contains("github.com/login/oauth/authorize")
+                // 应携带测试环境配置的 dummy client_id
+                .contains("client_id=");
+    }
+
+    @Test
+    void renderAuthIncludesRedirectUriInAuthorizationUrl() throws Exception {
+        MvcResult result = mockMvc.perform(get("/oauth/render/github"))
+                .andExpect(status().is3xxRedirection())
+                .andReturn();
+
+        String location = result.getResponse().getRedirectedUrl();
+        // 授权 URL 必须携带 redirect_uri，否则 GitHub 会拒绝
+        assertThat(location)
+                .as("授权 URL 必须携带 redirect_uri 参数")
+                .contains("redirect_uri");
+    }
+
+    // =============================================
+    // GET /api/auth/callback/github — OAuth 回调
+    // =============================================
+
+    @Test
+    void callbackRedirectsToFrontendErrorPageWhenOAuthFails() throws Exception {
+        // 不携带合法的 code 和 state，JustAuth 会返回失败响应
+        // 控制器应将其重定向至前端错误页（/login?error=oauth_failed）
+        MvcResult result = mockMvc.perform(
+                        get("/api/auth/callback/github")
+                                .param("code", "invalid-code")
+                                .param("state", "invalid-state"))
+                .andExpect(status().is3xxRedirection())
+                .andReturn();
+
+        String location = result.getResponse().getRedirectedUrl();
+        assertThat(location)
+                .as("OAuth 失败时应重定向至前端错误页")
+                .isNotNull()
+                .endsWith("/login?error=oauth_failed");
+    }
+
+    @Test
+    void callbackWithoutParametersRedirectsToFrontendErrorPage() throws Exception {
+        // 完全不携带任何参数，模拟用户直接访问回调地址
+        MvcResult result = mockMvc.perform(get("/api/auth/callback/github"))
+                .andExpect(status().is3xxRedirection())
+                .andReturn();
+
+        String location = result.getResponse().getRedirectedUrl();
+        assertThat(location)
+                .as("无参数请求时应重定向至前端错误页")
+                .isNotNull()
+                .endsWith("/login?error=oauth_failed");
+    }
+}

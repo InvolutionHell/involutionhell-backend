@@ -1,49 +1,66 @@
 package com.involutionhell.backend.openai.controller;
 
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.involutionhell.backend.openai.dto.OpenAiStreamRequest;
 import com.involutionhell.backend.openai.service.OpenAiStreamGateway;
-import com.involutionhell.backend.openai.service.OpenAiStreamService;
 import com.involutionhell.backend.support.AbstractWebIntegrationTest;
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Primary;
-import org.springframework.context.annotation.Import;
-import org.springframework.http.MediaType;
 import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
+import org.springframework.context.annotation.Primary;
+import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MvcResult;
 
+/**
+ * OpenAiStreamController 集成测试。
+ *
+ * 旧测试有三个问题：
+ *
+ * 1. 请求体字段写错了。DTO 已从单字段 message 改为多轮对话列表 messages，
+ *    旧测试还发 {"message":"..."}, 服务端 messages 为空，直接 400 校验失败，根本进不了 SSE 流程。
+ *
+ * 2. 匿名请求的期望消息过时了。未带 token 是 Sa-Token NOT_TOKEN 场景，
+ *    GlobalExceptionHandler 现在返回 "未提供 Token"，不是旧版的通用文案。
+ *
+ * 3. StreamingResponseBody 不能用轮询 getContentAsString() 来读响应体。
+ *    Spring 把实际写入分派到异步线程，MockMvc 必须用两步走：
+ *    先 perform + asyncStarted 拿到 MvcResult，再 perform(asyncDispatch(mvcResult)) 才能读到内容。
+ *    旧版轮询方式始终读到空，超时报错。
+ */
 @Import(OpenAiStreamControllerIntegrationTests.OpenAiTestConfiguration.class)
 class OpenAiStreamControllerIntegrationTests extends AbstractWebIntegrationTest {
 
     @Test
     void streamReturnsSseEventsForAuthenticatedUser() throws Exception {
         String token = loginAsAdmin();
+
+        // 第一步：发起请求，确认异步处理已启动（StreamingResponseBody 异步写入）
         MvcResult mvcResult = mockMvc.perform(post("/openai/responses/stream")
                         .header("satoken", token)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
-                                  "message": "你好"
+                                  "messages": [{"role": "user", "content": "你好"}]
                                 }
                                 """))
                 .andExpect(request().asyncStarted())
                 .andReturn();
 
-        waitForSseBody(mvcResult);
-
-        Assertions.assertThat(mvcResult.getResponse().getStatus()).isEqualTo(200);
-        Assertions.assertThat(mvcResult.getResponse().getContentType()).startsWith(MediaType.TEXT_EVENT_STREAM_VALUE);
-        Assertions.assertThat(mvcResult.getResponse().getContentAsString()).contains("response.output_text.delta");
-        Assertions.assertThat(mvcResult.getResponse().getContentAsString()).contains("response.completed");
+        // 第二步：触发异步派发，此时响应体才真正写入，relayEvents() 把内容转成 0:"hello"\n 格式
+        mockMvc.perform(asyncDispatch(mvcResult))
+                .andExpect(status().isOk())
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("0:")))
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("hello")));
     }
 
     @Test
@@ -52,16 +69,16 @@ class OpenAiStreamControllerIntegrationTests extends AbstractWebIntegrationTest 
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
-                                  "message": "你好"
+                                  "messages": [{"role": "user", "content": "你好"}]
                                 }
                                 """))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.success").value(false))
-                .andExpect(jsonPath("$.message").value("未登录或登录状态已失效"));
+                .andExpect(jsonPath("$.message").value("未提供 Token"));
     }
 
     @Test
-    void streamValidatesBlankMessage() throws Exception {
+    void streamValidatesEmptyMessages() throws Exception {
         String token = loginAsAdmin();
 
         mockMvc.perform(post("/openai/responses/stream")
@@ -69,33 +86,18 @@ class OpenAiStreamControllerIntegrationTests extends AbstractWebIntegrationTest 
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
-                                  "message": ""
+                                  "messages": []
                                 }
                                 """))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.success").value(false))
-                .andExpect(jsonPath("$.message").value("message: 消息不能为空"));
-    }
-
-    /**
-     * 等待模拟的 SSE 推送线程把事件内容写入响应体。
-     */
-    private void waitForSseBody(MvcResult mvcResult) throws Exception {
-        for (int attempt = 0; attempt < 20; attempt++) {
-            if (!mvcResult.getResponse().getContentAsString().isBlank()) {
-                return;
-            }
-            Thread.sleep(25L);
-        }
-        throw new IllegalStateException("SSE 响应内容未按预期写入");
+                .andExpect(jsonPath("$.message").value("messages: 对话历史不能为空"));
     }
 
     @TestConfiguration
     static class OpenAiTestConfiguration {
 
-        /**
-         * 提供一个稳定的测试桩网关，避免控制器测试依赖真实 OpenAI 或 Mockito。
-         */
+        // 用 stub 替换真实 Gateway，避免集成测试依赖外部 OpenAI 服务
         @Bean
         @Primary
         OpenAiStreamGateway openAiStreamGateway() {
@@ -105,22 +107,18 @@ class OpenAiStreamControllerIntegrationTests extends AbstractWebIntegrationTest 
 
     private static final class StubOpenAiStreamGateway implements OpenAiStreamGateway {
 
-        /**
-         * 测试环境下跳过外部 OpenAI 配置校验。
-         */
         @Override
         public void validateConfiguration(OpenAiStreamRequest request) {
         }
 
-        /**
-         * 返回固定的 SSE 事件流，供控制器测试验证输出格式。
-         */
+        // 必须用 OpenAI 实际的 SSE 格式，relayEvents() 从 choices[0].delta.content 读文本。
+        // 旧 stub 用的是自定义 {"type":"...","delta":"..."} 格式，relayEvents() 解析不到，输出为空。
         @Override
         public InputStream openStream(OpenAiStreamRequest request) {
             return new ByteArrayInputStream("""
-                    data: {"type":"response.output_text.delta","delta":"hello"}
+                    data: {"choices":[{"delta":{"content":"hello"}}]}
 
-                    data: {"type":"response.completed"}
+                    data: [DONE]
 
                     """.getBytes(StandardCharsets.UTF_8));
         }
