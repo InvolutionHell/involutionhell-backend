@@ -95,7 +95,7 @@ docker compose up -d postgres redis
 ./mvnw spring-boot:run
 ```
 
-默认接口入口：`http://127.0.0.1:8080/api/v1`
+默认接口入口：`http://127.0.0.1:8080`
 
 ### 4. 调用示例接口
 内置种子账号：
@@ -104,7 +104,7 @@ docker compose up -d postgres redis
 
 登录示例：
 ```bash
-curl -X POST http://127.0.0.1:8080/api/auth/login \
+curl -X POST http://127.0.0.1:8080/auth/login \
   -H "Content-Type: application/json" \
   -d '{"username": "admin", "password": "Admin@123456"}'
 ```
@@ -136,7 +136,7 @@ push to main
 **生产环境健康检查端点：**
 
 ```
-GET https://api.involutionhell.com/api/v1/actuator/health
+GET https://api.involutionhell.com/actuator/health
 ```
 
 返回 `{"status":"UP"}` 表示服务正常运行。

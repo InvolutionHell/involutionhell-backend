@@ -9,7 +9,10 @@ public record UserView(
         String displayName,
         boolean enabled,
         Set<String> roles,
-        Set<String> permissions
+        Set<String> permissions,
+        String avatarUrl,  // GitHub 头像 URL，前端 UserMenu 显示头像用
+        String email,      // GitHub 邮箱（可为 null）
+        Long githubId      // GitHub 数字 ID，用于贡献者追踪
 ) {
 
     /**
@@ -22,7 +25,10 @@ public record UserView(
                 userAccount.displayName(),
                 userAccount.enabled(),
                 userAccount.roles(),
-                userAccount.permissions()
+                userAccount.permissions(),
+                userAccount.avatarUrl(),
+                userAccount.email(),
+                userAccount.githubId()
         );
     }
 }

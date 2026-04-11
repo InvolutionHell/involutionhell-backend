@@ -1,6 +1,6 @@
 package com.involutionhell.backend.usercenter.controller;
 
-import org.springframework.security.access.prepost.PreAuthorize;
+import cn.dev33.satoken.annotation.SaCheckLogin;
 import com.involutionhell.backend.common.api.ApiResponse;
 import com.involutionhell.backend.usercenter.dto.LoginRequest;
 import com.involutionhell.backend.usercenter.dto.LoginResponse;
@@ -14,7 +14,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
-@RequestMapping("/api/auth")
+@RequestMapping("/auth")  // context-path 已含 /api/v1，此处不再重复加 /api 前缀
 public class AuthController {
 
     private final AuthService authService;
@@ -37,7 +37,7 @@ public class AuthController {
     /**
      * 退出当前登录会话。
      */
-    @PreAuthorize("isAuthenticated()")
+    @SaCheckLogin
     @PostMapping("/logout")
     public ApiResponse<Void> logout() {
         authService.logout();
@@ -47,7 +47,7 @@ public class AuthController {
     /**
      * 查询当前登录用户信息。
      */
-    @PreAuthorize("isAuthenticated()")
+    @SaCheckLogin
     @GetMapping("/me")
     public ApiResponse<UserView> currentUser() {
         return ApiResponse.ok(authService.currentUser());

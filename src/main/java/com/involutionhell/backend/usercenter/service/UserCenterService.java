@@ -1,14 +1,14 @@
 package com.involutionhell.backend.usercenter.service;
 
-import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.security.oauth2.jwt.Jwt;
+import cn.dev33.satoken.stp.StpUtil;
 import com.involutionhell.backend.usercenter.dto.UserAuthorizationUpdateRequest;
 import com.involutionhell.backend.usercenter.dto.UserView;
 import com.involutionhell.backend.usercenter.model.UserAccount;
 import com.involutionhell.backend.usercenter.repository.UserAccountRepository;
+import org.springframework.stereotype.Service;
+
 import java.util.List;
 import java.util.Optional;
-import org.springframework.stereotype.Service;
 
 @Service
 public class UserCenterService {
@@ -28,23 +28,26 @@ public class UserCenterService {
     public Optional<UserAccount> findByUsername(String username) {
         return userAccountRepository.findByUsername(username);
     }
+    
+    /**
+     * 新增用户。
+     */
+    public UserAccount createUser(UserAccount userAccount) {
+        return userAccountRepository.insert(userAccount);
+    }
+
+    /**
+     * 刷新 GitHub 用户的个人资料（展示名、头像、邮箱、GitHub ID），每次登录时调用。
+     */
+    public UserAccount updateProfile(Long userId, String displayName, String avatarUrl, String email, Long githubId) {
+        return userAccountRepository.updateProfile(userId, displayName, avatarUrl, email, githubId);
+    }
 
     /**
      * 获取当前登录用户的信息。
      */
     public UserView currentUser() {
-        Object principal = SecurityContextHolder.getContext().getAuthentication().getPrincipal();
-        Long currentUserId;
-        
-        if (principal instanceof Jwt jwt) {
-            currentUserId = Long.parseLong(jwt.getSubject());
-        } else if (principal instanceof Long id) {
-            currentUserId = id;
-        } else {
-            // 这里可以扩展更多的主体解析逻辑
-            throw new IllegalStateException("无法解析当前用户身份");
-        }
-        
+        long currentUserId = StpUtil.getLoginIdAsLong();
         return getUser(currentUserId);
     }
 

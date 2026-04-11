@@ -29,4 +29,14 @@ public interface UserAccountRepository {
      * 更新指定用户的角色与权限，返回更新后的用户对象。
      */
     UserAccount updateAuthorization(Long userId, Set<String> roles, Set<String> permissions);
+
+    /**
+     * 新增用户，并返回插入后的用户对象（包含生成的自增 ID）。
+     */
+    UserAccount insert(UserAccount userAccount);
+
+    /**
+     * 更新 GitHub 用户的个人资料（展示名、头像、邮箱、GitHub ID），每次登录时刷新。
+     */
+    UserAccount updateProfile(Long userId, String displayName, String avatarUrl, String email, Long githubId);
 }

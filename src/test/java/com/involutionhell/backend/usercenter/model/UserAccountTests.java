@@ -17,7 +17,8 @@ class UserAccountTests {
                 "管理员",
                 true,
                 Set.of(" Admin ", "admin", "USER"),
-                Set.of(" user:profile:read ", "USER:PROFILE:READ", "user:center:read")
+                Set.of(" user:profile:read ", "USER:PROFILE:READ", "user:center:read"),
+                null, null, null
         );
 
         assertThat(account.roles()).containsExactlyInAnyOrder("admin", "user");
@@ -33,7 +34,8 @@ class UserAccountTests {
                 "管理员",
                 true,
                 Set.of("admin"),
-                Set.of("user:profile:read")
+                Set.of("user:profile:read"),
+                null, null, null
         );
 
         UserAccount updated = account.withAuthorization(Set.of(" Reviewer "), Set.of(" USER:CENTER:READ "));
@@ -52,7 +54,8 @@ class UserAccountTests {
                 "普通用户",
                 true,
                 Set.of("user"),
-                Set.of("user:profile:read")
+                Set.of("user:profile:read"),
+                null, null, null
         );
 
         UserView view = UserView.from(account);
