@@ -43,13 +43,10 @@ public class GlobalExceptionHandler {
     /**
      * Sa-Token: 拦截权限不足异常。
      *
-     * <p><b>为什么用 {@code e.getPermission()} 而不是 {@code e.getCode()}？</b><br>
-     * {@code NotPermissionException} 继承自 {@code SaTokenException}，父类的 {@code getCode()}
-     * 返回的是异常场景码（整数，如 -1），表示"哪种类型的 Sa-Token 异常"，而非权限字符串本身。
-     * 权限字符串（如 {@code "user:center:read"}）存储在 {@code NotPermissionException}
-     * 自身的 {@code permission} 字段中，须通过 {@code getPermission()} 获取。
-     * 若误用 {@code getCode()}，错误消息将显示为 "拒绝访问: 缺少权限 [-1]"，
-     * 对调用方毫无诊断价值。</p>
+     * 注意要用 e.getPermission() 而不是 e.getCode()。
+     * getCode() 是父类 SaTokenException 的方法，返回的是整数场景码（比如 -1），
+     * 而权限字符串（比如 "user:center:read"）在 NotPermissionException 自己的 permission 字段里，
+     * 要调 getPermission() 才能拿到。用错了的话错误消息会变成 "拒绝访问: 缺少权限 [-1]"，没有任何意义。
      */
     @ExceptionHandler(NotPermissionException.class)
     public ResponseEntity<ApiResponse<Void>> handleNotPermissionException(NotPermissionException e) {

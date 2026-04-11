@@ -12,22 +12,11 @@ import org.springframework.http.MediaType;
 /**
  * AuthController 集成测试（账号密码登录、退出、当前用户查询）。
  *
- * <h3>历史测试失败原因（已修复）</h3>
- * <p>修复前，所有测试都报 "Driver claims to not accept jdbcUrl, jdbc:postgresql://..."，
- * 根本原因是 {@code SPRING_DATASOURCE_URL} 环境变量覆盖了 {@code application-test.properties}
- * 中的 H2 配置，已通过 {@link com.involutionhell.backend.support.AbstractWebIntegrationTest}
- * 的 {@code @SpringBootTest(properties)} 解决。</p>
- *
- * <h3>匿名请求错误消息的变化（"未登录..." → "未提供 Token"）</h3>
- * <p>旧版测试断言 {@code "未登录或登录状态已失效"}，此消息来自早期 GlobalExceptionHandler
- * 使用通用文案的版本。当前 GlobalExceptionHandler 对 {@code NotLoginException} 按场景值细分：
- * <ul>
- *   <li>{@code NOT_TOKEN}（完全未携带 token）→ "未提供 Token"</li>
- *   <li>{@code INVALID_TOKEN}（token 格式非法）→ "Token 无效"</li>
- *   <li>{@code TOKEN_TIMEOUT} → "Token 已过期"</li>
- *   <li>…</li>
- * </ul>
- * 匿名请求属于 {@code NOT_TOKEN} 场景，故正确消息为 "未提供 Token"。</p>
+ * 旧测试断言的匿名请求错误消息是 "未登录或登录状态已失效"，这是早期 GlobalExceptionHandler 的通用文案。
+ * 现在 GlobalExceptionHandler 对 NotLoginException 按场景值细分：
+ * 完全没带 token 是 NOT_TOKEN 场景，对应 "未提供 Token"；
+ * token 格式非法是 INVALID_TOKEN，对应 "Token 无效"；以此类推。
+ * 匿名请求属于 NOT_TOKEN，所以正确消息是 "未提供 Token"。
  */
 class AuthControllerIntegrationTests extends AbstractWebIntegrationTest {
 
@@ -90,10 +79,7 @@ class AuthControllerIntegrationTests extends AbstractWebIntegrationTest {
                 .andExpect(jsonPath("$.data.permissions[0]").isNotEmpty());
     }
 
-    /**
-     * 未携带任何 token 访问受保护接口，Sa-Token 抛出 NOT_TOKEN 场景的 NotLoginException，
-     * GlobalExceptionHandler 将其映射为 "未提供 Token"（而非旧版通用文案"未登录或登录状态已失效"）。
-     */
+    // 未带 token 是 NOT_TOKEN 场景，GlobalExceptionHandler 返回 "未提供 Token"
     @Test
     void meRejectsAnonymousRequest() throws Exception {
         mockMvc.perform(get("/auth/me"))
@@ -117,10 +103,7 @@ class AuthControllerIntegrationTests extends AbstractWebIntegrationTest {
                 .andExpect(jsonPath("$.success").value(false));
     }
 
-    /**
-     * 匿名 POST /auth/logout，同样属于 NOT_TOKEN 场景，期望 "未提供 Token"。
-     * 旧版测试使用通用消息，已更新为当前 GlobalExceptionHandler 的实际输出。
-     */
+    // 同上，匿名 logout 也是 NOT_TOKEN 场景
     @Test
     void logoutRejectsAnonymousRequest() throws Exception {
         mockMvc.perform(post("/auth/logout"))
