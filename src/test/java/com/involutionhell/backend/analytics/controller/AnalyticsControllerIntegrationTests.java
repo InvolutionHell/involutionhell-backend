@@ -1,48 +1,36 @@
 package com.involutionhell.backend.analytics.controller;
 
+import com.involutionhell.backend.analytics.dto.TopDocDto;
 import com.involutionhell.backend.analytics.service.AnalyticsService;
 import com.involutionhell.backend.analytics.service.Ga4UnavailableException;
-import com.involutionhell.backend.analytics.dto.TopDocDto;
-import com.involutionhell.backend.analytics.config.Ga4ClientConfig;
-import com.involutionhell.backend.analytics.service.Ga4ReportService;
+import com.involutionhell.backend.support.AbstractWebIntegrationTest;
 import com.google.analytics.data.v1beta.BetaAnalyticsDataClient;
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.springframework.test.web.servlet.MockMvc;
 
 import java.util.List;
 
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@SpringBootTest(properties = {
-        "spring.datasource.url=jdbc:h2:mem:analytics_test;MODE=PostgreSQL;DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE",
-        "spring.datasource.username=sa",
-        "spring.datasource.password=",
-        "spring.datasource.driver-class-name=org.h2.Driver",
-        "spring.sql.init.mode=always",
-        "spring.sql.init.schema-locations=classpath:test-schema.sql",
-        "justauth.type.github.redirect-uri=https://example.com/api/auth/callback/github",
-        "justauth.type.github.client-id=test-client-id",
-        "justauth.type.github.client-secret=test-client-secret"
-})
-@AutoConfigureMockMvc
-class AnalyticsControllerIntegrationTests {
+/**
+ * AnalyticsController 的 Web 集成测试。
+ *
+ * 继承 {@link AbstractWebIntegrationTest} 以复用仓库统一的数据源/JustAuth 覆盖，
+ * 避免本测试自维护一份 @SpringBootTest 属性集，减少测试环境漂移。
+ */
+class AnalyticsControllerIntegrationTests extends AbstractWebIntegrationTest {
 
-    @Autowired
-    private MockMvc mockMvc;
-
-    // mock GA4 client 以避免真实 IO，同时 mock service 直接控制业务逻辑
+    // mock GA4 客户端 Bean，避免加载真实 gRPC 连接
     @MockitoBean
     private BetaAnalyticsDataClient betaAnalyticsDataClient;
 
+    // 直接 mock service 层，精确控制返回值 / 验证参数
     @MockitoBean
     private AnalyticsService analyticsService;
 
@@ -79,7 +67,12 @@ class AnalyticsControllerIntegrationTests {
 
         mockMvc.perform(get("/analytics/top-docs?window=invalid"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.success").value(true));
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data").isArray());
+
+        // 强断言：controller 必须把非法 window 回退到 30d 传给 service，
+        // 否则即使忘了回退逻辑测试也会通过（service mock 对未命中 stub 返回 null）
+        verify(analyticsService).getTopDocs("30d", 20);
     }
 
     @Test
@@ -88,6 +81,9 @@ class AnalyticsControllerIntegrationTests {
 
         mockMvc.perform(get("/analytics/top-docs?limit=999"))
                 .andExpect(status().isOk());
+
+        // 强断言：limit=999 必须被夹到 100 再进入 service
+        verify(analyticsService).getTopDocs("30d", 100);
     }
 
     @Test

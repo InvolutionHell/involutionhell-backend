@@ -27,7 +27,8 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(Ga4UnavailableException.class)
     public ResponseEntity<ApiResponse<Void>> handleGa4Unavailable(Ga4UnavailableException e) {
-        log.error("GA4 服务不可用: {}", e.getMessage());
+        // 带上异常对象让 logger 打印完整堆栈，便于排查 gRPC/超时/凭证失效等根因
+        log.error("GA4 服务不可用", e);
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                 .body(ApiResponse.fail("数据分析服务暂时不可用，请稍后重试"));
     }

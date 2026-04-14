@@ -46,12 +46,19 @@ public class AnalyticsService {
                 .toList();
     }
 
+    /**
+     * 查询 docs 表，把 GA4 返回的 pagePath 批量映射成标题。
+     *
+     * GA4 pagePath 形如 /docs/ai/multimodal/qwenvl
+     * docs.path_current 形如 app/docs/ai/multimodal/qwenvl/index.mdx 或 app/docs/.../xxx.mdx
+     * 用 PostgreSQL 正则归一化 path_current 为 URL 形式后再匹配。
+     *
+     * 查询失败直接抛 {@link IllegalStateException}，由全局异常处理器返回 500，
+     * 不再返回空 Map 导致上层 containsKey 过滤把整个榜单静默清空。
+     */
     private Map<String, String> queryDocTitles(List<String> paths) {
         if (paths.isEmpty()) return Map.of();
 
-        // GA4 pagePath 形如 /docs/ai/multimodal/qwenvl
-        // docs.path_current 形如 app/docs/ai/multimodal/qwenvl/index.mdx 或 app/docs/.../xxx.mdx
-        // 使用 PostgreSQL 正则归一化 path_current 为 URL 形式后再匹配
         try {
             String sql = """
                     SELECT normalized AS path_current, title
@@ -75,8 +82,8 @@ public class AnalyticsService {
                     (a, b) -> a
             ));
         } catch (Exception e) {
-            log.warn("查询 docs 表失败，将跳过标题映射: {}", e.getMessage());
-            return Map.of();
+            log.error("查询 docs 表失败，无法构建标题映射", e);
+            throw new IllegalStateException("查询 docs 表失败", e);
         }
     }
 }
