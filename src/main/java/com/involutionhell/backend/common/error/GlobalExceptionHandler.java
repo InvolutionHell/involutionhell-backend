@@ -3,7 +3,10 @@ package com.involutionhell.backend.common.error;
 import cn.dev33.satoken.exception.NotLoginException;
 import cn.dev33.satoken.exception.NotPermissionException;
 import cn.dev33.satoken.exception.NotRoleException;
+import com.involutionhell.backend.analytics.service.Ga4UnavailableException;
 import com.involutionhell.backend.common.api.ApiResponse;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import jakarta.validation.ConstraintViolationException;
 import java.util.Optional;
 import org.springframework.http.HttpStatus;
@@ -15,6 +18,19 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+
+    private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+
+    // ==========================================
+    // Analytics 异常拦截
+    // ==========================================
+
+    @ExceptionHandler(Ga4UnavailableException.class)
+    public ResponseEntity<ApiResponse<Void>> handleGa4Unavailable(Ga4UnavailableException e) {
+        log.error("GA4 服务不可用: {}", e.getMessage());
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(ApiResponse.fail("数据分析服务暂时不可用，请稍后重试"));
+    }
 
     // ==========================================
     // Sa-Token 异常拦截
