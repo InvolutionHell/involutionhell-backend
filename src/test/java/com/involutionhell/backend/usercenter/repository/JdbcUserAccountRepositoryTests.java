@@ -100,7 +100,7 @@ class JdbcUserAccountRepositoryTests {
         UserAccount toInsert = new UserAccount(
                 null, "newuser", "hash-value", "新用户",
                 true, Set.of("user"), Set.of("user:profile:read"),
-                "https://avatar.example.com", "newuser@example.com", 99999L
+                "https://avatar.example.com", "newuser@example.com", 99999L, null
         );
 
         UserAccount saved = repository.insert(toInsert);
@@ -122,7 +122,7 @@ class JdbcUserAccountRepositoryTests {
         UserAccount toInsert = new UserAccount(
                 null, "github_user", "random-hash", "GitHub 用户",
                 true, Set.of("user"), Set.of(),
-                null, null, null
+                null, null, null, null
         );
 
         UserAccount saved = repository.insert(toInsert);
@@ -138,7 +138,7 @@ class JdbcUserAccountRepositoryTests {
     void insertPersistsEmptyRolesAsEmptySet() {
         UserAccount toInsert = new UserAccount(
                 null, "norole_user", "hash", "无角色用户",
-                true, Set.of(), Set.of(), null, null, null
+                true, Set.of(), Set.of(), null, null, null, null
         );
 
         UserAccount saved = repository.insert(toInsert);

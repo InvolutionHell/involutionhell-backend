@@ -7,7 +7,9 @@ import com.involutionhell.backend.usercenter.model.UserAccount;
 import com.involutionhell.backend.usercenter.repository.UserAccountRepository;
 import org.springframework.stereotype.Service;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 @Service
@@ -79,5 +81,23 @@ public class UserCenterService {
                 request.permissions()
         );
         return UserView.from(updatedAccount);
+    }
+
+    /**
+     * 获取指定用户的偏好 Map，未设置时返回空 Map。
+     */
+    public Map<String, Object> getPreferences(Long userId) {
+        return userAccountRepository.findPreferences(userId);
+    }
+
+    /**
+     * 将 patch 合并进用户偏好（顶层 key 覆盖），返回更新后全量偏好。
+     */
+    public Map<String, Object> patchPreferences(Long userId, Map<String, Object> patch) {
+        // 先读出现有偏好，再在 Java 侧合并，最后整体写回（兼容 H2 测试环境）
+        Map<String, Object> existing = userAccountRepository.findPreferences(userId);
+        Map<String, Object> merged = new HashMap<>(existing);
+        merged.putAll(patch);
+        return userAccountRepository.updatePreferences(userId, merged);
     }
 }

@@ -1,11 +1,15 @@
 package com.involutionhell.backend.usercenter.repository;
 
+import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.ObjectMapper;
 import com.involutionhell.backend.usercenter.model.UserAccount;
 
 import java.sql.PreparedStatement;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -21,12 +25,16 @@ import org.springframework.stereotype.Repository;
 public class JdbcUserAccountRepository implements UserAccountRepository {
 
     private final JdbcTemplate jdbc;
+    private final ObjectMapper objectMapper;
+
+    private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
 
     /**
      * 将数据库行映射为 UserAccount 记录。
      * roles / permissions 以逗号分隔字符串存储，空字符串对应空集合。
+     * preferences 存为 JSONB（测试 H2 用 VARCHAR），读出后解析为 Map。
      */
-    private static final RowMapper<UserAccount> ROW_MAPPER = (rs, rowNum) -> new UserAccount(
+    private final RowMapper<UserAccount> rowMapper = (rs, rowNum) -> new UserAccount(
             rs.getLong("id"),
             rs.getString("username"),
             rs.getString("password_hash"),
@@ -36,30 +44,32 @@ public class JdbcUserAccountRepository implements UserAccountRepository {
             parseSet(rs.getString("permissions")),
             rs.getString("avatar_url"),
             rs.getString("email"),
-            rs.getObject("github_id", Long.class)  // nullable Long
+            rs.getObject("github_id", Long.class),
+            parseJson(rs.getString("preferences"))
     );
 
-    public JdbcUserAccountRepository(JdbcTemplate jdbc) {
+    public JdbcUserAccountRepository(JdbcTemplate jdbc, ObjectMapper objectMapper) {
         this.jdbc = jdbc;
+        this.objectMapper = objectMapper;
     }
 
     @Override
     public Optional<UserAccount> findById(Long id) {
         List<UserAccount> results = jdbc.query(
-                "SELECT * FROM user_accounts WHERE id = ?", ROW_MAPPER, id);
+                "SELECT * FROM user_accounts WHERE id = ?", rowMapper, id);
         return results.stream().findFirst();
     }
 
     @Override
     public Optional<UserAccount> findByUsername(String username) {
         List<UserAccount> results = jdbc.query(
-                "SELECT * FROM user_accounts WHERE username = ?", ROW_MAPPER, username);
+                "SELECT * FROM user_accounts WHERE username = ?", rowMapper, username);
         return results.stream().findFirst();
     }
 
     @Override
     public List<UserAccount> findAll() {
-        return jdbc.query("SELECT * FROM user_accounts ORDER BY id", ROW_MAPPER);
+        return jdbc.query("SELECT * FROM user_accounts ORDER BY id", rowMapper);
     }
 
     @Override
@@ -107,7 +117,8 @@ public class JdbcUserAccountRepository implements UserAccountRepository {
                 userAccount.permissions(),
                 userAccount.avatarUrl(),
                 userAccount.email(),
-                userAccount.githubId()
+                userAccount.githubId(),
+                Map.of()
         );
     }
 
@@ -119,6 +130,46 @@ public class JdbcUserAccountRepository implements UserAccountRepository {
                 displayName, avatarUrl, email, githubId, userId);
         return findById(userId)
                 .orElseThrow(() -> new IllegalArgumentException("用户不存在: " + userId));
+    }
+
+    @Override
+    public Map<String, Object> findPreferences(Long userId) {
+        List<String> results = jdbc.query(
+                "SELECT preferences FROM user_accounts WHERE id = ?",
+                (rs, rn) -> rs.getString("preferences"),
+                userId);
+        if (results.isEmpty()) {
+            throw new IllegalArgumentException("用户不存在: " + userId);
+        }
+        return parseJson(results.get(0));
+    }
+
+    @Override
+    public Map<String, Object> updatePreferences(Long userId, Map<String, Object> merged) {
+        // 接收已合并好的全量偏好，直接覆盖写入（合并逻辑在 service 层完成，兼容 H2 测试环境）
+        String mergedJson = toJson(merged);
+        jdbc.update(connection -> {
+            var ps = connection.prepareStatement(
+                    "UPDATE user_accounts SET preferences = ? WHERE id = ?");
+            // PostgreSQL 连接时用 PGobject 传 jsonb 类型；H2 等直接用 String
+            String driverName = connection.getMetaData().getDriverName();
+            if (driverName != null && driverName.toLowerCase().contains("postgresql")) {
+                try {
+                    var pgObjectClass = Class.forName("org.postgresql.util.PGobject");
+                    var pgObject = pgObjectClass.getDeclaredConstructor().newInstance();
+                    pgObjectClass.getMethod("setType", String.class).invoke(pgObject, "jsonb");
+                    pgObjectClass.getMethod("setValue", String.class).invoke(pgObject, mergedJson);
+                    ps.setObject(1, pgObject);
+                } catch (Exception e) {
+                    ps.setString(1, mergedJson);
+                }
+            } else {
+                ps.setString(1, mergedJson);
+            }
+            ps.setLong(2, userId);
+            return ps;
+        });
+        return findPreferences(userId);
     }
 
     /**
@@ -139,5 +190,30 @@ public class JdbcUserAccountRepository implements UserAccountRepository {
             return "";
         }
         return String.join(",", values);
+    }
+
+    /**
+     * 将 JSON 字符串解析为 Map，null 或解析失败时返回空 Map。
+     */
+    private Map<String, Object> parseJson(String json) {
+        if (json == null || json.isBlank() || "{}".equals(json.trim())) {
+            return new HashMap<>();
+        }
+        try {
+            return objectMapper.readValue(json, MAP_TYPE);
+        } catch (Exception e) {
+            return new HashMap<>();
+        }
+    }
+
+    /**
+     * 将 Map 序列化为 JSON 字符串。
+     */
+    private String toJson(Map<String, Object> map) {
+        try {
+            return objectMapper.writeValueAsString(map);
+        } catch (Exception e) {
+            return "{}";
+        }
     }
 }

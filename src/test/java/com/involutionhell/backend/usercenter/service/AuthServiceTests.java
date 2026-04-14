@@ -46,13 +46,13 @@ class AuthServiceTests {
     /** 创建一个已启用的标准用户。 */
     private UserAccount enabledUser(Long id, String username, String passwordHash) {
         return new UserAccount(id, username, passwordHash, "显示名称", true,
-                Set.of("user"), Set.of("user:profile:read"), null, null, null);
+                Set.of("user"), Set.of("user:profile:read"), null, null, null, null);
     }
 
     /** 创建一个已停用的用户。 */
     private UserAccount disabledUser(Long id, String username) {
         return new UserAccount(id, username, "hash", "显示名称", false,
-                Set.of("user"), Set.of(), null, null, null);
+                Set.of("user"), Set.of(), null, null, null, null);
     }
 
     /**
@@ -220,7 +220,7 @@ class AuthServiceTests {
         UserAccount afterUpdate = new UserAccount(
                 10L, "github_12345", "hash", "UpdatedNick", true,
                 Set.of("user"), Set.of("user:profile:read"),
-                "https://new-avatar.url", "new@github.com", 12345L
+                "https://new-avatar.url", "new@github.com", 12345L, null
         );
         when(userCenterService.findByUsername("github_12345")).thenReturn(Optional.of(existing));
         when(userCenterService.updateProfile(10L, "UpdatedNick", "https://new-avatar.url", "new@github.com", 12345L))

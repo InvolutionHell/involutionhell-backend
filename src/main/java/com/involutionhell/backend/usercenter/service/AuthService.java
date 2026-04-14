@@ -81,7 +81,8 @@ public class AuthService {
                     Set.of(),       // 默认权限
                     avatarUrl,
                     email,
-                    githubId
+                    githubId,
+                    null            // 偏好由数据库默认值初始化为 {}
             );
             return userCenterService.createUser(newUser);
         });
