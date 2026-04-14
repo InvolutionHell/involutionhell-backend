@@ -23,6 +23,7 @@ public class SaTokenConfigure implements WebMvcConfigurer {
                 .notMatch("/oauth/render/github")          // GitHub OAuth 授权发起
                 .notMatch("/api/auth/callback/github")     // GitHub OAuth 回调（路径与 OAuth App 注册保持一致）
                 .notMatch("/analytics/top-docs")           // 文档热榜公开接口
+                .notMatch("/analytics/events/summary")     // 事件聚合摘要，公开只读接口
                 .check(r -> StpUtil.checkLogin());         // 未登录抛出 NotLoginException
         })).addPathPatterns("/**");
     }
