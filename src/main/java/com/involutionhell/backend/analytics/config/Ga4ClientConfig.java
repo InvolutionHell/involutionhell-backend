@@ -11,16 +11,25 @@ import org.springframework.context.annotation.Configuration;
 import java.io.FileInputStream;
 import java.io.IOException;
 
+/**
+ * 构造 BetaAnalyticsDataClient 单例 Bean 并注入 Service Account 凭证。
+ * 客户端基于 gRPC，线程安全，在应用启动时创建一次即可；作用域仅申请 analytics.readonly，不写任何数据。
+ */
 @Configuration
 public class Ga4ClientConfig {
 
     private static final Logger log = LoggerFactory.getLogger(Ga4ClientConfig.class);
 
+    /**
+     * 从本地 JSON 文件加载 Google Service Account 密钥构造 GA4 Data API 客户端。
+     * 启动失败（如凭证路径不存在或无访问权限）会让容器启动失败，及时暴露配置问题。
+     */
     @Bean
     public BetaAnalyticsDataClient betaAnalyticsDataClient(Ga4Properties ga4Properties) throws IOException {
         String credPath = ga4Properties.getCredentialsPath();
         log.info("初始化 GA4 客户端，凭证路径: {}", credPath);
 
+        // 只申请只读权限，最小权限原则；凭证流在 fromStream 内部完成读取
         GoogleCredentials credentials = GoogleCredentials
                 .fromStream(new FileInputStream(credPath))
                 .createScoped("https://www.googleapis.com/auth/analytics.readonly");

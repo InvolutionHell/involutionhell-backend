@@ -35,3 +35,4 @@ build/
 .env.*
 
 ga4-sa-key.json
+.env
