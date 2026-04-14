@@ -14,6 +14,9 @@ CREATE TABLE IF NOT EXISTS user_accounts (
     github_id     BIGINT       UNIQUE
 );
 
+-- 偏好设置列（JSONB 顶层合并，前端可自由扩展 key）
+ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS preferences JSONB NOT NULL DEFAULT '{}'::jsonb;
+
 -- 默认种子账号（已存在则跳过）
 -- admin / Admin@123456
 -- alice / Alice@123456
