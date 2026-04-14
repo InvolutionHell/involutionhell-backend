@@ -1,7 +1,9 @@
 package com.involutionhell.backend.analytics.controller;
 
+import com.involutionhell.backend.analytics.dto.EventSummaryDto;
 import com.involutionhell.backend.analytics.dto.TopDocDto;
 import com.involutionhell.backend.analytics.service.AnalyticsService;
+import com.involutionhell.backend.analytics.service.EventSummaryService;
 import com.involutionhell.backend.common.api.ApiResponse;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -12,7 +14,8 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * 文档数据分析接口。公开路由（Sa-Token 白名单见 SaTokenConfigure），匿名用户也可访问。
+ * Analytics 聚合接口，目前所有端点均为公开路由（SaTokenConfigure 白名单）。
+ * 数据来自 GA4，匿名用户也可访问。
  */
 @RestController
 @RequestMapping("/analytics")
@@ -22,9 +25,12 @@ public class AnalyticsController {
     private static final Set<String> VALID_WINDOWS = Set.of("7d", "30d", "all");
 
     private final AnalyticsService analyticsService;
+    private final EventSummaryService eventSummaryService;
 
-    public AnalyticsController(AnalyticsService analyticsService) {
+    public AnalyticsController(AnalyticsService analyticsService,
+                               EventSummaryService eventSummaryService) {
         this.analyticsService = analyticsService;
+        this.eventSummaryService = eventSummaryService;
     }
 
     /**
@@ -47,5 +53,19 @@ public class AnalyticsController {
 
         List<TopDocDto> docs = analyticsService.getTopDocs(window, limit);
         return ApiResponse.ok(docs);
+    }
+
+    /**
+     * 按时间窗口返回各事件类型的总数和独立用户数。
+     *
+     * @param window 7d | 30d | all，非法值回退到 30d
+     */
+    @GetMapping("/events/summary")
+    public ApiResponse<List<EventSummaryDto>> eventsSummary(
+            @RequestParam(defaultValue = "30d") String window) {
+        if (!VALID_WINDOWS.contains(window)) {
+            window = "30d";
+        }
+        return ApiResponse.ok(eventSummaryService.summarize(window));
     }
 }

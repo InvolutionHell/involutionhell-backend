@@ -116,7 +116,7 @@
 			<version>0.57.0</version>
 		</dependency>
 
-		<!-- Spring Cache + Caffeine -->
+		<!-- Spring Cache + Caffeine 本地缓存 -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-cache</artifactId>
