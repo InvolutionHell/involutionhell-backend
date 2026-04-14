@@ -29,10 +29,14 @@ public class Ga4ClientConfig {
         String credPath = ga4Properties.getCredentialsPath();
         log.info("初始化 GA4 客户端，凭证路径: {}", credPath);
 
-        // 只申请只读权限，最小权限原则；凭证流在 fromStream 内部完成读取
-        GoogleCredentials credentials = GoogleCredentials
-                .fromStream(new FileInputStream(credPath))
-                .createScoped("https://www.googleapis.com/auth/analytics.readonly");
+        // 只申请只读权限（最小权限原则）；try-with-resources 显式关闭文件流，
+        // GoogleCredentials.fromStream 并不保证替调用方关闭 InputStream
+        GoogleCredentials credentials;
+        try (FileInputStream credentialsStream = new FileInputStream(credPath)) {
+            credentials = GoogleCredentials
+                    .fromStream(credentialsStream)
+                    .createScoped("https://www.googleapis.com/auth/analytics.readonly");
+        }
 
         BetaAnalyticsDataSettings settings = BetaAnalyticsDataSettings.newBuilder()
                 .setCredentialsProvider(() -> credentials)
