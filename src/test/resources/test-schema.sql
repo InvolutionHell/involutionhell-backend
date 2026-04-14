@@ -9,7 +9,8 @@ CREATE TABLE IF NOT EXISTS user_accounts (
     permissions   TEXT         NOT NULL DEFAULT '',
     avatar_url    VARCHAR(500),
     email         VARCHAR(255),
-    github_id     BIGINT       UNIQUE
+    github_id     BIGINT       UNIQUE,
+    preferences   VARCHAR(4000) NOT NULL DEFAULT '{}'
 );
 
 -- 种子账号（与生产保持一致）逐行插入，H2 兼容写法

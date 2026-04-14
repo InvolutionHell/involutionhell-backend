@@ -2,6 +2,7 @@ package com.involutionhell.backend.usercenter.model;
 
 import java.util.LinkedHashSet;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 public record UserAccount(
@@ -12,24 +13,26 @@ public record UserAccount(
         boolean enabled,
         Set<String> roles,
         Set<String> permissions,
-        String avatarUrl,   // GitHub 头像 URL
-        String email,       // GitHub 邮箱（可为 null，GitHub 用户可设为私密）
-        Long githubId       // GitHub 数字 ID，用于 doc_contributors 贡献者追踪
+        String avatarUrl,           // GitHub 头像 URL
+        String email,               // GitHub 邮箱（可为 null，GitHub 用户可设为私密）
+        Long githubId,              // GitHub 数字 ID，用于 doc_contributors 贡献者追踪
+        Map<String, Object> preferences  // 用户偏好，JSONB 顶层 key 自由扩展
 ) {
 
     /**
-     * 创建用户对象时统一规范化角色与权限集合。
+     * 创建用户对象时统一规范化角色与权限集合，偏好为 null 时初始化为空 Map。
      */
     public UserAccount {
         roles = normalizeSet(roles);
         permissions = normalizeSet(permissions);
+        preferences = preferences != null ? preferences : Map.of();
     }
 
     /**
      * 基于当前用户信息生成一个新的授权快照。
      */
     public UserAccount withAuthorization(Set<String> newRoles, Set<String> newPermissions) {
-        return new UserAccount(id, username, passwordHash, displayName, enabled, newRoles, newPermissions, avatarUrl, email, githubId);
+        return new UserAccount(id, username, passwordHash, displayName, enabled, newRoles, newPermissions, avatarUrl, email, githubId, preferences);
     }
 
     /**

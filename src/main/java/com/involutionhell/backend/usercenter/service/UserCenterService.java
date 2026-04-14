@@ -8,6 +8,7 @@ import com.involutionhell.backend.usercenter.repository.UserAccountRepository;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 @Service
@@ -79,5 +80,20 @@ public class UserCenterService {
                 request.permissions()
         );
         return UserView.from(updatedAccount);
+    }
+
+    /**
+     * 获取指定用户的偏好 Map，未设置时返回空 Map。
+     */
+    public Map<String, Object> getPreferences(Long userId) {
+        return userAccountRepository.findPreferences(userId);
+    }
+
+    /**
+     * 将 patch 合并进用户偏好（顶层 key 覆盖），返回更新后全量偏好。
+     * 合并原子性由 repository 层保证（PostgreSQL 用 jsonb 原生 `||` 单条 UPDATE，避免并发 lost update）。
+     */
+    public Map<String, Object> patchPreferences(Long userId, Map<String, Object> patch) {
+        return userAccountRepository.patchPreferences(userId, patch);
     }
 }

@@ -2,6 +2,7 @@ package com.involutionhell.backend.usercenter.repository;
 
 import com.involutionhell.backend.usercenter.model.UserAccount;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
@@ -39,4 +40,16 @@ public interface UserAccountRepository {
      * 更新 GitHub 用户的个人资料（展示名、头像、邮箱、GitHub ID），每次登录时刷新。
      */
     UserAccount updateProfile(Long userId, String displayName, String avatarUrl, String email, Long githubId);
+
+    /**
+     * 查询指定用户的偏好 Map，用户不存在时抛 IllegalArgumentException。
+     */
+    Map<String, Object> findPreferences(Long userId);
+
+    /**
+     * 以 patch 为单位在数据库端原子合并用户偏好（顶层 key 覆盖），返回合并后的全量偏好。
+     * PostgreSQL 实现走 `preferences || ?::jsonb` 单条 UPDATE，避免并发 lost update；
+     * H2 走 read-merge-write 路径兼容测试。
+     */
+    Map<String, Object> patchPreferences(Long userId, Map<String, Object> patch);
 }
