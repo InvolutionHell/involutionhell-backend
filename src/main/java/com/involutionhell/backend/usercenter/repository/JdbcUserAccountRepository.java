@@ -5,6 +5,7 @@ import tools.jackson.databind.ObjectMapper;
 import com.involutionhell.backend.usercenter.model.UserAccount;
 
 import java.sql.PreparedStatement;
+import java.sql.Types;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -12,6 +13,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
@@ -23,6 +26,8 @@ import org.springframework.stereotype.Repository;
  */
 @Repository
 public class JdbcUserAccountRepository implements UserAccountRepository {
+
+    private static final Logger log = LoggerFactory.getLogger(JdbcUserAccountRepository.class);
 
     private final JdbcTemplate jdbc;
     private final ObjectMapper objectMapper;
@@ -84,8 +89,11 @@ public class JdbcUserAccountRepository implements UserAccountRepository {
     @Override
     public UserAccount insert(UserAccount userAccount) {
         KeyHolder keyHolder = new GeneratedKeyHolder();
-        String sql = "INSERT INTO user_accounts (username, password_hash, display_name, enabled, roles, permissions, avatar_url, email, github_id) " +
-                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
+        // 把 preferences 一并写入 INSERT，避免创建用户时携带的初始偏好被丢弃
+        String sql = "INSERT INTO user_accounts (username, password_hash, display_name, enabled, roles, permissions, avatar_url, email, github_id, preferences) " +
+                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+
+        String prefsJson = toJson(userAccount.preferences());
 
         jdbc.update(connection -> {
             PreparedStatement ps = connection.prepareStatement(sql, new String[]{"id"});
@@ -99,6 +107,8 @@ public class JdbcUserAccountRepository implements UserAccountRepository {
             ps.setString(8, userAccount.email());
             // github_id 可为 null，用 setObject 处理
             ps.setObject(9, userAccount.githubId());
+            // jsonb 用 Types.OTHER 让 PostgreSQL 驱动自行识别；H2 会当作字符串处理
+            ps.setObject(10, prefsJson, Types.OTHER);
             return ps;
         }, keyHolder);
 
@@ -107,19 +117,9 @@ public class JdbcUserAccountRepository implements UserAccountRepository {
             throw new IllegalStateException("插入用户失败，无法获取生成的 ID");
         }
 
-        return new UserAccount(
-                key.longValue(),
-                userAccount.username(),
-                userAccount.passwordHash(),
-                userAccount.displayName(),
-                userAccount.enabled(),
-                userAccount.roles(),
-                userAccount.permissions(),
-                userAccount.avatarUrl(),
-                userAccount.email(),
-                userAccount.githubId(),
-                Map.of()
-        );
+        // 插入后回读整行，确保返回值与数据库一致，避免遗漏新列或字段漂移
+        return findById(key.longValue())
+                .orElseThrow(() -> new IllegalStateException("插入用户后无法读取回数据: id=" + key.longValue()));
     }
 
     @Override
@@ -145,31 +145,57 @@ public class JdbcUserAccountRepository implements UserAccountRepository {
     }
 
     @Override
-    public Map<String, Object> updatePreferences(Long userId, Map<String, Object> merged) {
-        // 接收已合并好的全量偏好，直接覆盖写入（合并逻辑在 service 层完成，兼容 H2 测试环境）
-        String mergedJson = toJson(merged);
-        jdbc.update(connection -> {
-            var ps = connection.prepareStatement(
-                    "UPDATE user_accounts SET preferences = ? WHERE id = ?");
-            // PostgreSQL 连接时用 PGobject 传 jsonb 类型；H2 等直接用 String
-            String driverName = connection.getMetaData().getDriverName();
-            if (driverName != null && driverName.toLowerCase().contains("postgresql")) {
-                try {
-                    var pgObjectClass = Class.forName("org.postgresql.util.PGobject");
-                    var pgObject = pgObjectClass.getDeclaredConstructor().newInstance();
-                    pgObjectClass.getMethod("setType", String.class).invoke(pgObject, "jsonb");
-                    pgObjectClass.getMethod("setValue", String.class).invoke(pgObject, mergedJson);
-                    ps.setObject(1, pgObject);
-                } catch (Exception e) {
-                    ps.setString(1, mergedJson);
-                }
-            } else {
-                ps.setString(1, mergedJson);
+    public Map<String, Object> patchPreferences(Long userId, Map<String, Object> patch) {
+        // 直接在 DB 端做原子 merge，避免 Java 侧 read-merge-write 的并发 lost update；
+        // 同时用 setObject + Types.OTHER，避开反射 PGobject 在 GraalVM native image 下
+        // reflection hints 未注册导致的启动失败。
+        //
+        // PostgreSQL：UPDATE ... SET preferences = preferences || ?::jsonb
+        //   使用 jsonb 原生 `||` 操作符做顶层 key 合并，单条语句原子完成
+        // H2（测试环境）：UPDATE ... SET preferences = ? （全量覆盖）
+        //   测试环境不追求并发正确性，由 service 层先 read-merge-write 保证合并语义
+        String patchJson = toJson(patch);
+        boolean isPostgres = isPostgres();
+
+        if (isPostgres) {
+            int updated = jdbc.update(connection -> {
+                var ps = connection.prepareStatement(
+                        "UPDATE user_accounts SET preferences = preferences || ?::jsonb WHERE id = ?");
+                ps.setObject(1, patchJson, Types.OTHER);
+                ps.setLong(2, userId);
+                return ps;
+            });
+            if (updated == 0) {
+                throw new IllegalArgumentException("用户不存在: " + userId);
             }
-            ps.setLong(2, userId);
-            return ps;
-        });
+        } else {
+            // H2 路径：先读后合并再整体写入（测试环境无并发压力）
+            Map<String, Object> existing = findPreferences(userId);
+            Map<String, Object> merged = new HashMap<>(existing);
+            merged.putAll(patch);
+            String mergedJson = toJson(merged);
+            int updated = jdbc.update(
+                    "UPDATE user_accounts SET preferences = ? WHERE id = ?",
+                    mergedJson, userId);
+            if (updated == 0) {
+                throw new IllegalArgumentException("用户不存在: " + userId);
+            }
+        }
+
         return findPreferences(userId);
+    }
+
+    /** 判断当前数据源是否为 PostgreSQL（通过驱动名识别）。 */
+    private boolean isPostgres() {
+        try {
+            return Boolean.TRUE.equals(jdbc.execute((java.sql.Connection c) -> {
+                String name = c.getMetaData().getDriverName();
+                return name != null && name.toLowerCase().contains("postgresql");
+            }));
+        } catch (Exception e) {
+            log.warn("检测数据源驱动失败，按非 PostgreSQL 兜底: {}", e.getMessage());
+            return false;
+        }
     }
 
     /**
@@ -193,7 +219,9 @@ public class JdbcUserAccountRepository implements UserAccountRepository {
     }
 
     /**
-     * 将 JSON 字符串解析为 Map，null 或解析失败时返回空 Map。
+     * 将 JSON 字符串解析为 Map。
+     * null / 空串 / "{}" 视为"未设置"返回空 Map；解析失败（数据库里脏数据）则抛出异常，
+     * 避免静默吞错，让调用方感知并由全局异常处理器返回 500。
      */
     private Map<String, Object> parseJson(String json) {
         if (json == null || json.isBlank() || "{}".equals(json.trim())) {
@@ -202,18 +230,21 @@ public class JdbcUserAccountRepository implements UserAccountRepository {
         try {
             return objectMapper.readValue(json, MAP_TYPE);
         } catch (Exception e) {
-            return new HashMap<>();
+            log.error("解析 preferences JSON 失败，数据可能已损坏: {}", json, e);
+            throw new IllegalStateException("解析 preferences 失败", e);
         }
     }
 
     /**
      * 将 Map 序列化为 JSON 字符串。
+     * 失败时抛出异常而不是返回 "{}"，避免把有问题的偏好当成空偏好静默覆盖掉原有数据。
      */
     private String toJson(Map<String, Object> map) {
         try {
             return objectMapper.writeValueAsString(map);
         } catch (Exception e) {
-            return "{}";
+            log.error("序列化 preferences 失败: {}", map, e);
+            throw new IllegalStateException("序列化 preferences 失败", e);
         }
     }
 }

@@ -47,7 +47,9 @@ public interface UserAccountRepository {
     Map<String, Object> findPreferences(Long userId);
 
     /**
-     * 将已合并好的全量偏好写入数据库，返回写入后的值。
+     * 以 patch 为单位在数据库端原子合并用户偏好（顶层 key 覆盖），返回合并后的全量偏好。
+     * PostgreSQL 实现走 `preferences || ?::jsonb` 单条 UPDATE，避免并发 lost update；
+     * H2 走 read-merge-write 路径兼容测试。
      */
-    Map<String, Object> updatePreferences(Long userId, Map<String, Object> merged);
+    Map<String, Object> patchPreferences(Long userId, Map<String, Object> patch);
 }
