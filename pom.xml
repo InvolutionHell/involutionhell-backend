@@ -109,6 +109,23 @@
 			<version>1.39.0</version>
 		</dependency>
 
+		<!-- Google Analytics Data API (GA4) -->
+		<dependency>
+			<groupId>com.google.analytics</groupId>
+			<artifactId>google-analytics-data</artifactId>
+			<version>0.57.0</version>
+		</dependency>
+
+		<!-- Spring Cache + Caffeine -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-cache</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>com.github.ben-manes.caffeine</groupId>
+			<artifactId>caffeine</artifactId>
+		</dependency>
+
 		<!--        &lt;!&ndash; redis &ndash;&gt;-->
 		<!--        <dependency>-->
 		<!--            <groupId>org.springframework.boot</groupId>-->
