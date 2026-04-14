@@ -2,6 +2,7 @@ package com.involutionhell.backend.analytics.service;
 
 import com.involutionhell.backend.analytics.dto.EventSummaryDto;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -35,37 +36,44 @@ class EventSummaryServiceTests {
     }
 
     // ---- window 参数规范化测试 ----
+    // normalize 是 public static，测试直接调类方法即可
 
     @Test
-    void normalize_返回7d_当入参为7d() {
-        assertThat(service.normalize("7d")).isEqualTo("7d");
+    @DisplayName("normalize：入参 7d 返回 7d")
+    void normalizeReturns7dWhenInputIs7d() {
+        assertThat(EventSummaryService.normalize("7d")).isEqualTo("7d");
     }
 
     @Test
-    void normalize_返回30d_当入参为30d() {
-        assertThat(service.normalize("30d")).isEqualTo("30d");
+    @DisplayName("normalize：入参 30d 返回 30d")
+    void normalizeReturns30dWhenInputIs30d() {
+        assertThat(EventSummaryService.normalize("30d")).isEqualTo("30d");
     }
 
     @Test
-    void normalize_返回all_当入参为all() {
-        assertThat(service.normalize("all")).isEqualTo("all");
+    @DisplayName("normalize：入参 all 返回 all")
+    void normalizeReturnsAllWhenInputIsAll() {
+        assertThat(EventSummaryService.normalize("all")).isEqualTo("all");
     }
 
     @Test
-    void normalize_回退到30d_当入参为null() {
-        assertThat(service.normalize(null)).isEqualTo("30d");
+    @DisplayName("normalize：入参 null 回退到 30d")
+    void normalizeFallsBackTo30dWhenInputIsNull() {
+        assertThat(EventSummaryService.normalize(null)).isEqualTo("30d");
     }
 
     @Test
-    void normalize_回退到30d_当入参非法() {
-        assertThat(service.normalize("invalid")).isEqualTo("30d");
+    @DisplayName("normalize：非法值回退到 30d")
+    void normalizeFallsBackTo30dWhenInputIsInvalid() {
+        assertThat(EventSummaryService.normalize("invalid")).isEqualTo("30d");
     }
 
     // ---- SQL 聚合参数传递测试 ----
 
     @Test
     @SuppressWarnings("unchecked")
-    void summarize_7d_传入正确interval参数() {
+    @DisplayName("summarize：7d 窗口传入正确 interval 参数")
+    void summarizeWith7dPassesCorrectInterval() {
         List<EventSummaryDto> fakeResult = List.of(
                 new EventSummaryDto("page_view", 100L, 30L)
         );
@@ -86,7 +94,8 @@ class EventSummaryServiceTests {
 
     @Test
     @SuppressWarnings("unchecked")
-    void summarize_30d_传入正确interval参数() {
+    @DisplayName("summarize：30d 窗口传入正确 interval 参数")
+    void summarizeWith30dPassesCorrectInterval() {
         when(jdbcTemplate.query(anyString(), any(RowMapper.class), any()))
                 .thenReturn(List.of());
 
@@ -99,7 +108,8 @@ class EventSummaryServiceTests {
 
     @Test
     @SuppressWarnings("unchecked")
-    void summarize_all_不传interval参数() {
+    @DisplayName("summarize：all 窗口不传 interval，走无时间条件 SQL")
+    void summarizeWithAllDoesNotPassInterval() {
         List<EventSummaryDto> fakeResult = List.of(
                 new EventSummaryDto("page_view", 500L, 80L),
                 new EventSummaryDto("agent_welcome", 120L, 40L)
@@ -117,7 +127,8 @@ class EventSummaryServiceTests {
 
     @Test
     @SuppressWarnings("unchecked")
-    void summarize_非法window_回退到30d() {
+    @DisplayName("summarize：非法 window 回退到 30d")
+    void summarizeWithInvalidWindowFallsBackTo30d() {
         when(jdbcTemplate.query(anyString(), any(RowMapper.class), any()))
                 .thenReturn(List.of());
 
