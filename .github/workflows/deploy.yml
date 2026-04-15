@@ -55,7 +55,17 @@ jobs:
               sleep 5
             done
 
-            # 健康检查超时，用备份镜像回滚
+            # 健康检查失败：先把新容器的日志打印出来，方便在 GitHub Actions 日志里定位问题
+            echo "========== 新容器 docker logs（最近 300 行） =========="
+            docker logs --tail=300 involution-hell-backend 2>&1 || true
+            echo "========== docker compose ps =========="
+            docker compose ps 2>&1 || true
+            echo "========== 容器 inspect（State + ExitCode） =========="
+            docker inspect --format='State: {{.State.Status}} ExitCode: {{.State.ExitCode}} Error: {{.State.Error}}' involution-hell-backend 2>&1 || true
+            echo "========== 最后的 restart 原因 =========="
+            docker inspect involution-hell-backend 2>&1 | grep -A3 'RestartCount\|OOMKilled\|Error' | head -20 || true
+
+            # 用备份镜像回滚
             echo "❌ 健康检查失败，正在回滚到上一个版本..."
             docker tag involutionhell-backend:rollback involutionhell-backend:latest
             docker compose up -d --remove-orphans
