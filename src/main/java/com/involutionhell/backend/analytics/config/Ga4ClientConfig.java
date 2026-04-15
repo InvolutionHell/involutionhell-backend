@@ -10,10 +10,16 @@ import org.springframework.context.annotation.Configuration;
 
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 /**
  * 构造 BetaAnalyticsDataClient 单例 Bean 并注入 Service Account 凭证。
  * 客户端基于 gRPC，线程安全，在应用启动时创建一次即可；作用域仅申请 analytics.readonly，不写任何数据。
+ *
+ * 容错策略：凭证文件不存在不阻塞容器启动，而是注册一个"调用即抛 Ga4UnavailableException"的 stub
+ * client。这样 GA4 接口运行时返回 503，其他业务（auth / preferences / 埋点）仍可用。
+ * 之前直接 throw IOException 让 Spring ApplicationContext 起不来 → 整个后端崩，影响面过大。
  */
 @Configuration
 public class Ga4ClientConfig {
@@ -22,26 +28,58 @@ public class Ga4ClientConfig {
 
     /**
      * 从本地 JSON 文件加载 Google Service Account 密钥构造 GA4 Data API 客户端。
-     * 启动失败（如凭证路径不存在或无访问权限）会让容器启动失败，及时暴露配置问题。
+     * 文件不存在或读取失败时记录 warning 并抛 IOException 让 Spring 跳过 bean 注册前的提前 check —
+     * 实际改为返回一个调用失败的 stub。
      */
     @Bean
-    public BetaAnalyticsDataClient betaAnalyticsDataClient(Ga4Properties ga4Properties) throws IOException {
+    public BetaAnalyticsDataClient betaAnalyticsDataClient(Ga4Properties ga4Properties) {
         String credPath = ga4Properties.getCredentialsPath();
-        log.info("初始化 GA4 客户端，凭证路径: {}", credPath);
 
-        // 只申请只读权限（最小权限原则）；try-with-resources 显式关闭文件流，
-        // GoogleCredentials.fromStream 并不保证替调用方关闭 InputStream
-        GoogleCredentials credentials;
-        try (FileInputStream credentialsStream = new FileInputStream(credPath)) {
-            credentials = GoogleCredentials
-                    .fromStream(credentialsStream)
-                    .createScoped("https://www.googleapis.com/auth/analytics.readonly");
+        if (credPath == null || credPath.isBlank() || !Files.exists(Path.of(credPath))) {
+            log.warn("GA4 凭证文件不存在或未配置 ({}), GA4 接口将返回 503，其余功能不受影响。",
+                    credPath);
+            return brokenClient(credPath);
         }
 
-        BetaAnalyticsDataSettings settings = BetaAnalyticsDataSettings.newBuilder()
-                .setCredentialsProvider(() -> credentials)
-                .build();
+        log.info("初始化 GA4 客户端，凭证路径: {}", credPath);
+        try (FileInputStream credentialsStream = new FileInputStream(credPath)) {
+            GoogleCredentials credentials = GoogleCredentials
+                    .fromStream(credentialsStream)
+                    .createScoped("https://www.googleapis.com/auth/analytics.readonly");
 
-        return BetaAnalyticsDataClient.create(settings);
+            BetaAnalyticsDataSettings settings = BetaAnalyticsDataSettings.newBuilder()
+                    .setCredentialsProvider(() -> credentials)
+                    .build();
+
+            return BetaAnalyticsDataClient.create(settings);
+        } catch (IOException e) {
+            log.warn("GA4 客户端初始化失败 ({}): {}, 降级到 stub", credPath, e.getMessage());
+            return brokenClient(credPath);
+        }
+    }
+
+    /**
+     * 构造一个"调用即失败"的 BetaAnalyticsDataClient，让 Ga4ReportService.fetchTopPaths
+     * 走异常分支抛 Ga4UnavailableException → GlobalExceptionHandler 转 503。
+     *
+     * 用 BetaAnalyticsDataClient.create(settings) 配一个无效 endpoint 即可；
+     * 实际方法调用会在网络层 / auth 层失败。
+     */
+    private BetaAnalyticsDataClient brokenClient(String credPath) {
+        try {
+            BetaAnalyticsDataSettings settings = BetaAnalyticsDataSettings.newBuilder()
+                    // 用一个明显无效的 endpoint，确保任何 RPC 立刻失败而不是真的去打 google
+                    .setEndpoint("invalid.localhost:0")
+                    .setCredentialsProvider(() -> {
+                        throw new IllegalStateException(
+                                "GA4 credentials file not configured: " + credPath);
+                    })
+                    .build();
+            return BetaAnalyticsDataClient.create(settings);
+        } catch (IOException e) {
+            // 这里几乎不会发生（create 只是包对象不发请求），保险起见还是抛 RuntimeException
+            throw new IllegalStateException(
+                    "Failed to construct stub GA4 client; both real and stub init failed", e);
+        }
     }
 }
