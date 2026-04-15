@@ -69,9 +69,18 @@ public class OAuthController {
      * GitHub → localhost:3000/api/auth/callback/github → Next.js rewrite → localhost:8080/api/auth/callback/github
      */
     @GetMapping("/api/auth/callback/github")
-    public void login(@RequestParam String code,
-                      @RequestParam String state,
+    public void login(@RequestParam(required = false) String code,
+                      @RequestParam(required = false) String state,
                       HttpServletResponse response) throws IOException {
+        // 参数缺失时直接走失败分支：若 @RequestParam 保持 required=true，Spring 在进入方法前
+        // 就抛 MissingServletRequestParameterException → 默认 500 白屏；
+        // 手动 null check 能把 "用户直接访问 / GitHub 异常回调" 统一兜底到前端错误页。
+        if (code == null || state == null) {
+            log.warn("[OAuth] GitHub callback missing code/state (direct access?), redirecting to error page");
+            response.sendRedirect(frontEndUrl + "/login?error=oauth_failed");
+            return;
+        }
+
         AuthCallback callback = new AuthCallback();
         callback.setCode(code);
         callback.setState(state);
