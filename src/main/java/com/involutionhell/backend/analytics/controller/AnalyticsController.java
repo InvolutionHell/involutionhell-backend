@@ -1,11 +1,18 @@
 package com.involutionhell.backend.analytics.controller;
 
+import cn.dev33.satoken.stp.StpUtil;
+import com.involutionhell.backend.analytics.dto.EventIngestDto;
 import com.involutionhell.backend.analytics.dto.EventSummaryDto;
 import com.involutionhell.backend.analytics.dto.TopDocDto;
+import com.involutionhell.backend.analytics.service.AnalyticsEventIngestService;
 import com.involutionhell.backend.analytics.service.AnalyticsService;
 import com.involutionhell.backend.analytics.service.EventSummaryService;
 import com.involutionhell.backend.common.api.ApiResponse;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -24,13 +31,18 @@ public class AnalyticsController {
     /** 支持的时间窗口取值，其他值一律回退到 30d，避免奇怪参数打到 GA4 */
     private static final Set<String> VALID_WINDOWS = Set.of("7d", "30d", "all");
 
+    private static final Logger log = LoggerFactory.getLogger(AnalyticsController.class);
+
     private final AnalyticsService analyticsService;
     private final EventSummaryService eventSummaryService;
+    private final AnalyticsEventIngestService eventIngestService;
 
     public AnalyticsController(AnalyticsService analyticsService,
-                               EventSummaryService eventSummaryService) {
+                               EventSummaryService eventSummaryService,
+                               AnalyticsEventIngestService eventIngestService) {
         this.analyticsService = analyticsService;
         this.eventSummaryService = eventSummaryService;
+        this.eventIngestService = eventIngestService;
     }
 
     /**
@@ -67,5 +79,40 @@ public class AnalyticsController {
             window = "30d";
         }
         return ApiResponse.ok(eventSummaryService.summarize(window));
+    }
+
+    /**
+     * 浏览器埋点写入入口：接收前端 trackEvent 上报的事件并落库。
+     * SaToken 白名单开放（允许匿名访问），登录用户通过 satoken header 识别 userId。
+     *
+     * 失败策略：即使 DB 挂了也返回 ok，埋点绝不能阻塞用户主流程。
+     * 错误只写日志，不对外暴露内部异常。
+     */
+    @PostMapping("/events")
+    public ApiResponse<Void> ingestEvent(@RequestBody EventIngestDto body) {
+        if (body == null || body.eventType() == null || body.eventType().isBlank()) {
+            return ApiResponse.fail("eventType is required");
+        }
+
+        // 尝试从 SaToken 上下文读取当前登录用户。白名单路由不会自动 checkLogin，
+        // 所以这里用 isLogin + getLoginIdAsLong 兼容匿名。
+        Long userId = null;
+        try {
+            if (StpUtil.isLogin()) {
+                userId = StpUtil.getLoginIdAsLong();
+            }
+        } catch (Exception ignored) {
+            // token 过期 / 非法格式都按匿名处理
+        }
+
+        try {
+            eventIngestService.insert(userId, body.eventType(), body.eventData());
+        } catch (Exception e) {
+            // 埋点是尽力而为，DB 异常只记日志，给前端 ok 避免触发客户端重试风暴
+            log.warn("analytics event ingest failed: eventType={}, userId={}, err={}",
+                    body.eventType(), userId, e.getMessage());
+        }
+
+        return ApiResponse.ok(null);
     }
 }
