@@ -2,6 +2,7 @@ package com.involutionhell.backend.analytics.config;
 
 import com.google.analytics.data.v1beta.BetaAnalyticsDataClient;
 import com.google.analytics.data.v1beta.BetaAnalyticsDataSettings;
+import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.auth.oauth2.GoogleCredentials;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -67,17 +68,16 @@ public class Ga4ClientConfig {
      */
     private BetaAnalyticsDataClient brokenClient(String credPath) {
         try {
+            // 用 NoCredentialsProvider 让 client 能成功构造（不在 init 时调 lambda），
+            // 实际 RPC 调用时会因为没凭证 + 无效 endpoint 立刻失败 →
+            // Ga4ReportService 捕获 → Ga4UnavailableException → 503。
             BetaAnalyticsDataSettings settings = BetaAnalyticsDataSettings.newBuilder()
-                    // 用一个明显无效的 endpoint，确保任何 RPC 立刻失败而不是真的去打 google
                     .setEndpoint("invalid.localhost:0")
-                    .setCredentialsProvider(() -> {
-                        throw new IllegalStateException(
-                                "GA4 credentials file not configured: " + credPath);
-                    })
+                    .setCredentialsProvider(NoCredentialsProvider.create())
                     .build();
+            log.warn("注册 GA4 stub client（凭证缺失：{}），所有 GA4 RPC 调用将返回 503", credPath);
             return BetaAnalyticsDataClient.create(settings);
         } catch (IOException e) {
-            // 这里几乎不会发生（create 只是包对象不发请求），保险起见还是抛 RuntimeException
             throw new IllegalStateException(
                     "Failed to construct stub GA4 client; both real and stub init failed", e);
         }
