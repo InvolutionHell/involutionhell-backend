@@ -51,22 +51,26 @@ public class UserPreferencesController {
     }
 
     /**
-     * 公开读取指定用户的主页数据：基本资料 + 偏好（bio / tagline / links / projects / pinned_papers）。
-     * 用于 /u/[username] 个人主页 SSR，任何人可访问，不需要登录。
+     * 公开读取指定用户的主页数据：基本资料 + 偏好。
+     * 贡献文档列表不在这里返回，前端直接读 build-time 生成的 site-leaderboard.json
+     * 按 githubId 匹配 —— 避免每次访问 /u/{x} 都打 Neon，节省免费额度。
+     * docs 本身是 git-based，JSON 新鲜度和 DB 一致（都是 deploy 级）。
+     *
+     * identifier 约定：
+     * - 纯数字 → 按 github_id 查询（推荐的 canonical URL，如 /u/114939201）
+     * - 字符串 → 按 username 查询（兼容 "github_&lt;id&gt;" / "alice" / "admin"）
      *
      * 返回结构：
      * {
-     *   "user": UserView,         // 不含角色/权限敏感字段？当前 UserView 有 roles/permissions，
-     *                             // 若未来限制展示在 DTO 层过滤；本期先原样返回避免 scope 扩大
-     *   "preferences": { ... }    // 原始 JSONB
+     *   "user": UserView,           // 基本信息 + githubId + avatarUrl
+     *   "preferences": { ... }      // JSONB: bio / tagline / links / projects / pinned_papers
      * }
      */
-    @GetMapping("/profile/{username}")
-    public ApiResponse<Map<String, Object>> getPublicProfile(@PathVariable String username) {
-        Optional<UserAccount> account = userCenterService.findByUsername(username);
+    @GetMapping("/profile/{identifier}")
+    public ApiResponse<Map<String, Object>> getPublicProfile(@PathVariable String identifier) {
+        Optional<UserAccount> account = userCenterService.findByIdentifier(identifier);
         if (account.isEmpty()) {
-            // ApiResponse.fail 泛型是 Void，这里显式构造匹配 Map 泛型的失败响应
-            return new ApiResponse<>(false, "用户不存在: " + username, null);
+            return new ApiResponse<>(false, "用户不存在: " + identifier, null);
         }
         UserAccount userAccount = account.get();
         Map<String, Object> preferences = userCenterService.getPreferences(userAccount.id());

@@ -29,7 +29,28 @@ public class UserCenterService {
     public Optional<UserAccount> findByUsername(String username) {
         return userAccountRepository.findByUsername(username);
     }
-    
+
+    /**
+     * 按标识符查找用户：纯数字优先走 github_id（/u/114939201 形式），
+     * 否则回退到 username 查找（兼容 "github_&lt;id&gt;" / "alice" / "admin" 等所有系统用户名）。
+     * 用于 profile 页 /u/{identifier} 的匿名访问。
+     */
+    public Optional<UserAccount> findByIdentifier(String identifier) {
+        if (identifier == null || identifier.isBlank()) {
+            return Optional.empty();
+        }
+        if (identifier.chars().allMatch(Character::isDigit)) {
+            try {
+                long gid = Long.parseLong(identifier);
+                Optional<UserAccount> byGid = userAccountRepository.findByGithubId(gid);
+                if (byGid.isPresent()) return byGid;
+            } catch (NumberFormatException ignored) {
+                // 数字太大无法 parse 时继续 fallthrough 走 username
+            }
+        }
+        return userAccountRepository.findByUsername(identifier);
+    }
+
     /**
      * 新增用户。
      */

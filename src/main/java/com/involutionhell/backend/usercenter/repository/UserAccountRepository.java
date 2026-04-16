@@ -22,6 +22,12 @@ public interface UserAccountRepository {
     Optional<UserAccount> findByUsername(String username);
 
     /**
+     * 按 GitHub 数字 ID 查询用户（对应 user_accounts.github_id）。
+     * 用于 profile 页 /u/{githubId} 的公开访问路径。
+     */
+    Optional<UserAccount> findByGithubId(Long githubId);
+
+    /**
      * 查询所有用户。
      */
     List<UserAccount> findAll();

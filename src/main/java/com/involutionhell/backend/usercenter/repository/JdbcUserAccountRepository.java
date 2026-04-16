@@ -73,6 +73,13 @@ public class JdbcUserAccountRepository implements UserAccountRepository {
     }
 
     @Override
+    public Optional<UserAccount> findByGithubId(Long githubId) {
+        List<UserAccount> results = jdbc.query(
+                "SELECT * FROM user_accounts WHERE github_id = ?", rowMapper, githubId);
+        return results.stream().findFirst();
+    }
+
+    @Override
     public List<UserAccount> findAll() {
         return jdbc.query("SELECT * FROM user_accounts ORDER BY id", rowMapper);
     }
