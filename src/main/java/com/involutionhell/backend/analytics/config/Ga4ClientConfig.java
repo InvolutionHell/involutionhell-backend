@@ -36,13 +36,25 @@ public class Ga4ClientConfig {
     public BetaAnalyticsDataClient betaAnalyticsDataClient(Ga4Properties ga4Properties) {
         String credPath = ga4Properties.getCredentialsPath();
 
+        // 前置 check：文件不存在 / 路径为空 / 文件为空（可能是部署时挂的占位文件）→ stub
         if (credPath == null || credPath.isBlank() || !Files.exists(Path.of(credPath))) {
-            log.warn("GA4 凭证文件不存在或未配置 ({}), GA4 接口将返回 503，其余功能不受影响。",
+            log.warn("GA4 凭证文件不存在或未配置 ({})，GA4 接口将返回 503，其余功能不受影响。",
                     credPath);
+            return brokenClient(credPath);
+        }
+        try {
+            if (Files.size(Path.of(credPath)) == 0) {
+                log.warn("GA4 凭证文件为空 ({}), 降级到 stub", credPath);
+                return brokenClient(credPath);
+            }
+        } catch (IOException e) {
+            log.warn("无法读取 GA4 凭证文件大小 ({}): {}, 降级到 stub", credPath, e.getMessage());
             return brokenClient(credPath);
         }
 
         log.info("初始化 GA4 客户端，凭证路径: {}", credPath);
+        // 捕获 Exception 而非仅 IOException：malformed JSON / 无效字段等
+        // GoogleCredentials.fromStream 可能抛 RuntimeException 子类，不想让启动挂在这里
         try (FileInputStream credentialsStream = new FileInputStream(credPath)) {
             GoogleCredentials credentials = GoogleCredentials
                     .fromStream(credentialsStream)
@@ -53,7 +65,7 @@ public class Ga4ClientConfig {
                     .build();
 
             return BetaAnalyticsDataClient.create(settings);
-        } catch (IOException e) {
+        } catch (Exception e) {
             log.warn("GA4 客户端初始化失败 ({}): {}, 降级到 stub", credPath, e.getMessage());
             return brokenClient(credPath);
         }
