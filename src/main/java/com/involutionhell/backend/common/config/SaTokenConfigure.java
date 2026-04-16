@@ -30,6 +30,7 @@ public class SaTokenConfigure implements WebMvcConfigurer {
                 .notMatch("/api/user-center/follows/followers/**")    // 粉丝列表公开读
                 .notMatch("/api/user-center/follows/following/**")    // 关注列表公开读
                 .notMatch("/api/user-center/follows/is-following/**") // 匿名查询时返回 false
+                .notMatch("/api/user-center/github/repos/**") // GitHub 公开 repos 代理，匿名可访问
                 .notMatch("/api/docs/history")             // 文档修改历史公开读，匿名可访问
                 .check(r -> StpUtil.checkLogin());         // 未登录抛出 NotLoginException
         })).addPathPatterns("/**");
