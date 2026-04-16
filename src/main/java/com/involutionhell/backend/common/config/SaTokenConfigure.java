@@ -26,6 +26,10 @@ public class SaTokenConfigure implements WebMvcConfigurer {
                 .notMatch("/analytics/events/summary")     // 事件聚合摘要，公开只读接口
                 .notMatch("/analytics/events")             // 浏览器埋点写入，匿名也放行（登录用户通过 satoken header 识别）
                 .notMatch("/api/user-center/profile/**")   // 个人主页公开读接口，匿名可访问
+                .notMatch("/api/user-center/follows/stats/**")        // 粉丝/关注数公开读
+                .notMatch("/api/user-center/follows/followers/**")    // 粉丝列表公开读
+                .notMatch("/api/user-center/follows/following/**")    // 关注列表公开读
+                .notMatch("/api/user-center/follows/is-following/**") // 匿名查询时返回 false
                 .notMatch("/api/docs/history")             // 文档修改历史公开读，匿名可访问
                 .check(r -> StpUtil.checkLogin());         // 未登录抛出 NotLoginException
         })).addPathPatterns("/**");
