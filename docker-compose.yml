@@ -25,8 +25,18 @@ services:
       # Actuator
       MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: ${MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE:-health}
       MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED: ${MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED:-true}
+      # GA4 凭证文件路径：容器内统一放 /app/ga4-sa-key.json，下面 volume 挂载主机文件进来。
+      # 主机文件不存在时 Ga4ClientConfig 会降级到 stub（/analytics/top-docs 返回 503），不影响启动。
+      GA4_CREDENTIALS_PATH: ${GA4_CREDENTIALS_PATH:-/app/ga4-sa-key.json}
+      # GitHub REST API token：DocHistoryService 调 /repos/.../commits 需要，
+      # 匿名限流 60/hour，带 token 5000/hour。未设置时 service 仍可用，只是容易被限流。
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
     ports:
       - "8080:8080"
+    volumes:
+      # 挂载主机 ga4-sa-key.json 到容器，避免把 service account 私钥打进镜像。
+      # 主机文件必须存在（可以是空文件，Spring 会识别为无效走 stub），否则 docker compose up 会失败。
+      - ./ga4-sa-key.json:/app/ga4-sa-key.json:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS \"http://127.0.0.1:${SERVER_PORT:-8080}/actuator/health\" | grep '\"status\":\"UP\"' >/dev/null || exit 1"]
       interval: 30s
