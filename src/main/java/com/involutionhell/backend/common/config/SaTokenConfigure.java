@@ -33,6 +33,10 @@ public class SaTokenConfigure implements WebMvcConfigurer {
                 .notMatch("/api/user-center/github/repos/**") // GitHub 公开 repos 代理，匿名可访问
                 .notMatch("/api/user-center/zotero/items")    // Zotero itemKey 元信息代理，匿名可访问
                 .notMatch("/api/docs/history")             // 文档修改历史公开读，匿名可访问
+                // Events 公开读接口：/api/events 列表 + /api/events/{id} 详情匿名可访问。
+                // /api/events/{id}/interest 感兴趣接口需要登录，由 @SaCheckLogin 在方法级别兜底。
+                // /api/admin/events/** 不放行，走 @SaCheckRole("admin") 校验。
+                .notMatch("/api/events", "/api/events/*")
                 .check(r -> StpUtil.checkLogin());         // 未登录抛出 NotLoginException
         })).addPathPatterns("/**");
     }

@@ -23,3 +23,28 @@ MERGE INTO user_accounts (username, password_hash, display_name, enabled, roles,
 MERGE INTO user_accounts (username, password_hash, display_name, enabled, roles, permissions)
     KEY (username)
     VALUES ('auditor', 'ccabaaba054fb98905b5b9ee47174f57cb6088e04b1526f08b872dc06eaa6bb9', 'Auditor', TRUE, 'auditor', 'user:profile:read,user:center:read');
+
+-- Events 相关表（测试用 H2 语法）。JSONB 用 VARCHAR 代替，与 user_accounts.preferences 的策略一致
+CREATE TABLE IF NOT EXISTS events (
+    id             BIGSERIAL    PRIMARY KEY,
+    title          VARCHAR(255) NOT NULL,
+    description    TEXT         NOT NULL DEFAULT '',
+    cover_url      VARCHAR(500),
+    start_time     TIMESTAMP,
+    end_time       TIMESTAMP,
+    discord_link   VARCHAR(500),
+    playback_url   VARCHAR(500),
+    speakers       VARCHAR(4000) NOT NULL DEFAULT '[]',
+    tags           TEXT         NOT NULL DEFAULT '',
+    status         VARCHAR(20)  NOT NULL DEFAULT 'published',
+    organizer_id   BIGINT,
+    created_at     TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at     TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS event_interests (
+    event_id   BIGINT      NOT NULL,
+    user_id    BIGINT      NOT NULL,
+    created_at TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (event_id, user_id)
+);
