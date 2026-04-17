@@ -20,38 +20,117 @@ docker-compose.yml 里四个相关服务：
 
 ## 常用操作
 
-### 登录 pgAdmin
+### 登录 pgAdmin（关键：走 sa-token cookie 校验，不是 pgAdmin 自己的账号密码）
 
-**生产环境（推荐）**：通过主站 iframe 进入
-1. `involutionhell.com` 登录 admin 账号
-2. 个人主页 → "管理员界面" → "数据库管理"
-3. 页面内 iframe 加载 `api.involutionhell.com/admin/pgadmin/`
-4. 用 `.env` 的 `PGADMIN_EMAIL` / `PGADMIN_PASSWORD` 登录 pgAdmin
+**生产环境**
 
-**本机联调**：`http://<server>:8082`（仅 127.0.0.1 监听，不对外暴露，需 SSH 转发）
-
-左侧树显示预注册的 `InvolutionHell (local)`，双击即连。
-
-### 反向代理 / iframe 架构
+pgAdmin 容器跑在 `SERVER_MODE=False`（desktop 模式，**自身无登录页**，进去就能操作 DB）。
+安全把门**不在 pgAdmin**，而是外层 Caddy 的 `forward_auth` 钩子：
 
 ```
-involutionhell.com（Vercel / Next.js）
-  └─ /admin/database 页面 iframe https://api.involutionhell.com/admin/pgadmin/
-       └─ Caddy (global-caddy-gateway, 本机 host 网络)
-            └─ 匹配 /admin/pgadmin/* → 127.0.0.1:8082 (pgAdmin 容器)
+浏览器 → api.involutionhell.com/admin/pgadmin/*
+          │ 携带 cookie: satoken=xxx（Domain=.involutionhell.com）
+          ▼
+        Caddy handle /admin/pgadmin/* {
+          forward_auth 127.0.0.1:8080 {
+              uri /api/admin/pgadmin-check   ← 后端接口带 @SaCheckRole("admin")
+              copy_headers Cookie            ← satoken cookie 透传
+          }
+          reverse_proxy 127.0.0.1:8082       ← 只有 forward_auth 200 才到这里
+        }
 ```
 
-pgAdmin 容器里的关键环境变量：
-- `SCRIPT_NAME=/admin/pgadmin` — 所有自动生成的 URL 自带前缀，
-  保证 iframe 里点击链接走对
-- `PGADMIN_CONFIG_X_FRAME_OPTIONS="''"` — 清空默认的 DENY，
-  由 Caddy 改用 CSP `frame-ancestors` 控制
-- `PGADMIN_CONFIG_WTF_CSRF_SSL_STRICT=False` — 跨子域 iframe
-  情况下 CSRF 严格模式会误伤，关掉
+**用户视角**：
+1. 先在主站 `involutionhell.com` 用 GitHub OAuth 登录
+2. 登录成功时前端会把 satoken **双写**：
+   - `localStorage.satoken`：给同源 fetch 手动附 header 用
+   - `cookie satoken=...; Domain=.involutionhell.com`：给 api 子域直连用
+3. 随便哪条都能进 pgAdmin：
+   - 点主站 `/admin/database` 页面的 "打开 pgAdmin" 按钮
+   - 直接敲 `https://api.involutionhell.com/admin/pgadmin/`
+4. 浏览器自动带 cookie → Caddy forward_auth → 后端看 cookie + 查角色 → admin 就放过
+5. 非 admin 或未登录 → 401（浏览器看到 Cloudflare/Caddy 的 401 错误页）
 
-Caddy 端响应头改写：剥 `X-Frame-Options`，加
-`Content-Security-Policy: frame-ancestors 'self' https://involutionhell.com …`。
-配置位置：`/home/ubuntu/caddy-gateway/Caddyfile`。
+**不需要也不应该**再输 pgAdmin 自己的 email/password——`.env` 里 `PGADMIN_EMAIL`/`PASSWORD`
+只是 desktop 模式下 pgAdmin 容器初始化用的占位，用户侧感知不到。
+
+**本机联调**：直接 `ssh -L 8082:127.0.0.1:8082 <server>` 然后浏览器开
+`http://localhost:8082/admin/pgadmin/`。这条路径绕过 Caddy，也就没有 forward_auth
+校验——管理员自己机器上专用，不对外。
+
+左侧树都能看到预注册的 `InvolutionHell (local)`，双击即连。
+
+### 反向代理 / forward_auth 架构
+
+```
+involutionhell.com（主站 / Vercel）
+   │ 登录成功 → 前端 lib/use-auth.tsx 写 cookie: satoken=xxx; Domain=.involutionhell.com
+   │
+   ├─ /admin/database 页面  →  Link target=_blank  →  api.involutionhell.com/admin/pgadmin/
+   │
+   └─ 或者用户直接在地址栏敲 api.involutionhell.com/admin/pgadmin/
+          │ 浏览器自动带 Domain=.involutionhell.com 的 satoken cookie
+          ▼
+      Caddy (global-caddy-gateway, host 网络)
+          │ forward_auth 127.0.0.1:8080  uri=/api/admin/pgadmin-check
+          │   ├─ 200  → 继续代理
+          │   └─ 非 200 → 拒绝
+          ▼
+      127.0.0.1:8082 (pgAdmin 容器, SERVER_MODE=False)
+```
+
+**pgAdmin 容器环境变量**：
+- `SCRIPT_NAME=/admin/pgadmin`：让 pgAdmin 自生成的 URL 自带前缀（含登录跳转 / CSS）
+- `PGADMIN_CONFIG_SERVER_MODE=False`：desktop / single-user，**不渲染登录页**。
+  安全由外层 forward_auth 把守
+- `PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED=False`：不用 master password 二次加密
+- `PGADMIN_CONFIG_X_FRAME_OPTIONS=''`：清空默认 DENY，Caddy 负责 CSP
+- 容器端口只绑 `127.0.0.1:8082`，不对公网开，唯一公网入口是 Caddy
+
+**Caddy 配置**（`/home/ubuntu/caddy-gateway/Caddyfile`，不在本仓库）：
+
+```caddy
+api.involutionhell.com {
+    handle /admin/pgadmin/* {
+        forward_auth 127.0.0.1:8080 {
+            uri /api/admin/pgadmin-check
+            copy_headers Cookie
+        }
+        header {
+            -X-Frame-Options
+            Content-Security-Policy "frame-ancestors 'self' https://involutionhell.com https://*.involutionhell.com https://*.vercel.app http://localhost:3000 http://localhost:3010"
+        }
+        reverse_proxy 127.0.0.1:8082 {
+            header_up X-Script-Name /admin/pgadmin
+            header_up X-Scheme https
+            header_up X-Forwarded-Proto https
+        }
+    }
+    handle { reverse_proxy 127.0.0.1:8080 }
+}
+```
+
+**后端端点**（`AdminInfraController.java`）：
+
+```java
+@RestController
+@RequestMapping("/api/admin")
+public class AdminInfraController {
+    @GetMapping("/pgadmin-check")
+    @SaCheckRole("admin")
+    public ApiResponse<Void> pgadminCheck() { return ApiResponse.okMessage("authorized"); }
+}
+```
+
+sa-token 默认从 header **和** cookie 同时读（`is-read-cookie=true` 默认开），
+所以无论是同源 fetch 带 satoken header、还是跨子域的新标签页靠 cookie 自动带，
+都能命中同一套角色校验。
+
+**前端 cookie 同步**（`lib/use-auth.tsx` 的 `syncTokenCookie`）：
+
+登录成功 / 每次刷新有效 session 时把 `localStorage.satoken` 复制一份到 cookie，
+`Domain=.involutionhell.com; Max-Age=2592000`。localhost 开发时不带 Domain。
+登出 / token 失效时反向清 cookie。
 
 ### 手动备份（立刻打一个快照）
 
