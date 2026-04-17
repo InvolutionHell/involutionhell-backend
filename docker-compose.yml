@@ -19,9 +19,9 @@ services:
       AUTH_GITHUB_SECRET: ${AUTH_GITHUB_SECRET:-}
       AUTH_SECRET: ${AUTH_SECRET:-}
       # OAuth 回调前缀：JustAuth 的 redirect-uri 用 ${AUTH_URL:http://localhost:3000}/api/auth/callback/github
-      # 拼接（见 application.properties）。compose 不显式透传的话，.env 的
-      # AUTH_URL 进不到容器里，生产会回退到 localhost:3000/3010，跳 GitHub 时
-      # redirect_uri 永远错，登录直接报 redirect_uri_mismatch。
+      # 拼接（见 application.properties）。当前 compose 已通过 env_file: .env 和
+      # environment 把 AUTH_URL 注入容器；如果生产上仍是旧值/回退到 localhost，
+      # 通常是因为容器未重建，环境变量变更需要 recreate 后才会生效，否则会报 redirect_uri_mismatch。
       AUTH_URL: ${AUTH_URL:-https://involutionhell.com}
       # AI 模型（默认 GLM-4.6V-Flash 免费 fallback，OpenAI 兼容协议）
       # 变量名沿用 OPENAI_*：Java 用的是 /chat/completions 规范协议，URL+Key+Model
