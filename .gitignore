@@ -36,3 +36,6 @@ build/
 
 ga4-sa-key.json
 .env
+
+# pgAdmin 密码文件（含明文，不入库）
+docker/pgadmin/pgpass

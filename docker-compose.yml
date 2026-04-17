@@ -77,9 +77,67 @@ services:
     networks:
       - InvolutionHell-net
 
+  # pgAdmin：PostgreSQL 的 Web GUI，带完整的备份/恢复按钮。
+  # 登录 http://<host>:8082，预注册服务器见 docker/pgadmin/servers.json，
+  # 密码通过 /pgpass 自动填充，不需要每次手输。
+  # 备份卷挂到 /var/lib/pgadmin/storage/.../backups，在 Restore 对话框里直接看得到。
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: involution-pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@involutionhell.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-change_me}
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
+    ports:
+      - "8082:80"
+    volumes:
+      - pgadmin-data:/var/lib/pgadmin
+      - ./docker/pgadmin/servers.json:/pgadmin4/servers.json:ro
+      # pgpass 主机文件必须是 UID 5050 所有且 0600，否则 pgAdmin 拒绝加载。
+      # 用 `sudo chown 5050:5050 docker/pgadmin/pgpass && sudo chmod 600 …` 设好。
+      - ./docker/pgadmin/pgpass:/tmp/pgpass
+      # 备份卷挂到 pgAdmin 用户默认存储目录，这样在 Restore 对话框里能直接选到
+      # pg-backup 容器每天生成的 dump 文件。路径格式：<email 替换 @ 为 _>/
+      - pg-backups:/var/lib/pgadmin/storage/admin_involutionhell.com/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - InvolutionHell-net
+
+  # 自动定时备份：每天 03:00 对 postgres 容器做 pg_dump（custom format），
+  # 输出到共享卷 pg-backups，pgAdmin 能直接在 Restore 对话框里看到这些文件。
+  # 保留最近 30 天日备 / 8 周周备 / 12 个月月备。
+  pg-backup:
+    image: prodrigestivill/postgres-backup-local:18-alpine
+    container_name: involution-pg-backup
+    restart: unless-stopped
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: ${POSTGRES_DB:-involution_hell}
+      POSTGRES_USER: ${POSTGRES_USER:-involution}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+      POSTGRES_EXTRA_OPTS: "-Fc --blobs"
+      SCHEDULE: "@daily"
+      BACKUP_KEEP_DAYS: 30
+      BACKUP_KEEP_WEEKS: 8
+      BACKUP_KEEP_MONTHS: 12
+      HEALTHCHECK_PORT: 8080
+    volumes:
+      - pg-backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - InvolutionHell-net
+
 networks:
   InvolutionHell-net:
     driver: bridge
 
 volumes:
   involution-postgres-data:
+  pgadmin-data:
+  pg-backups:

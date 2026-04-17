@@ -1,0 +1,16 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "InvolutionHell (local)",
+      "Group": "Servers",
+      "Host": "postgres",
+      "Port": 5432,
+      "MaintenanceDB": "involution_hell",
+      "Username": "neondb_owner",
+      "PassFile": "/tmp/pgpass",
+      "PassFileReadonly": true,
+      "SSLMode": "prefer",
+      "Shared": false
+    }
+  }
+}
