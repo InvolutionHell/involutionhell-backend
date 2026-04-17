@@ -17,7 +17,9 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Collectors;
 
 /**
  * 活动管理接口（需要 admin 角色）。
@@ -46,8 +48,12 @@ public class EventAdminController {
     @GetMapping
     public ApiResponse<List<EventView>> list() {
         List<Event> events = eventService.listAllForAdmin();
+        // 批量查 interest count 避免 N+1；admin 列表可能包含大量历史活动，
+        // 单独 COUNT 每条会明显拖慢后台
+        List<Long> ids = events.stream().map(Event::id).collect(Collectors.toList());
+        Map<Long, Long> interestCounts = eventService.countInterestByEventIds(ids);
         List<EventView> views = events.stream()
-                .map(e -> EventView.from(e, eventService.countInterest(e.id())))
+                .map(e -> EventView.from(e, interestCounts.getOrDefault(e.id(), 0L)))
                 .toList();
         return ApiResponse.ok(views);
     }

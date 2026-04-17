@@ -14,6 +14,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Collectors;
 
 /**
  * 活动公开读接口（匿名可访问）。
@@ -39,8 +40,11 @@ public class EventController {
     @GetMapping
     public ApiResponse<List<EventView>> list() {
         List<Event> events = eventService.listPublic();
+        // 批量一次查完 interest count，避免每个 event 都单独 COUNT（N+1）
+        List<Long> ids = events.stream().map(Event::id).collect(Collectors.toList());
+        Map<Long, Long> interestCounts = eventService.countInterestByEventIds(ids);
         List<EventView> views = events.stream()
-                .map(e -> EventView.from(e, eventService.countInterest(e.id())))
+                .map(e -> EventView.from(e, interestCounts.getOrDefault(e.id(), 0L)))
                 .toList();
         return ApiResponse.ok(views);
     }

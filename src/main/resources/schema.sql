@@ -27,16 +27,16 @@ VALUES ('admin',   'ad89b64d66caa8e30e5d5ce4a9763f4ecc205814c412175f3e2c50027471
        ('auditor', 'ccabaaba054fb98905b5b9ee47174f57cb6088e04b1526f08b872dc06eaa6bb9', 'Auditor', TRUE, 'auditor', 'user:profile:read,user:center:read')
 ON CONFLICT (username) DO NOTHING;
 
--- 站点维护者（GitHub OAuth 登录后由 sync 服务补 github_id；此处按 username 打 admin role）
--- 生产 Neon 上这些账号是 GitHub OAuth 登录后由 AuthService 自动创建的，所以用
--- ON CONFLICT DO UPDATE 幂等升级角色，避免漏 seed。
-INSERT INTO user_accounts (username, password_hash, display_name, enabled, roles, permissions)
-VALUES ('longsizhuo', '', 'Siz Long', TRUE, 'admin,user', 'user:profile:read,user:center:read,user:center:manage'),
-       ('Mira190',    '', 'Mira',     TRUE, 'admin,user', 'user:profile:read,user:center:read,user:center:manage'),
-       ('Crokily',    '', 'Crokily',  TRUE, 'admin,user', 'user:profile:read,user:center:read,user:center:manage')
-ON CONFLICT (username) DO UPDATE
-    SET roles       = 'admin,user',
-        permissions = 'user:profile:read,user:center:read,user:center:manage';
+-- 站点维护者 admin 升级：原先尝试按 GitHub handle（longsizhuo / Mira190 / Crokily）
+-- 做 seed，但 AuthService.loginByGithub 实际创建的 username 是 "github_{githubId}" 格式
+-- （见 AuthService.java），按 handle seed 只会插一批永远没人用的本地管理员账号。
+-- 正确做法：维护者首次 GitHub OAuth 登录后，手动（或由 admin 管理界面）按 github_id
+-- 升 roles：
+--   UPDATE user_accounts
+--   SET roles = 'admin,user',
+--       permissions = 'user:profile:read,user:center:read,user:center:manage'
+--   WHERE github_id IN (114939201, ...);
+-- 本文件不再插入 admin seed 账号。
 
 -- =============================================================================
 -- Events（活动）相关表
@@ -76,24 +76,33 @@ CREATE TABLE IF NOT EXISTS event_interests (
 
 CREATE INDEX IF NOT EXISTS idx_event_interests_user_id ON event_interests(user_id);
 
--- 种子：原来 data/event.json 里的 4 条活动（startTime 不填，先只保留元信息；
--- 管理员登录后在 /admin/events 里补时间再 publish）
+-- 种子：原来 data/event.json 里的 4 条活动。幂等策略：
+--   events 表主键是 BIGSERIAL id，INSERT 不带 id 所以不会冲突；原先用 ON CONFLICT
+--   DO NOTHING 实际上不防重复。这里改用 WHERE NOT EXISTS(title) 做幂等——
+--   每次 schema 重跑时，title 已存在的就跳过。
+-- startTime / endTime 先不填，管理员登录后在 /admin/events 里补时间再 publish。
 INSERT INTO events (title, description, cover_url, discord_link, playback_url, tags, status)
-VALUES
-    ('Mock Interview',   '模拟面试专场：匹配面试官 1v1，结束即反馈，积累真实面试体感。', '/event/mockInterview.webp',
-     'https://discord.gg/QHsjqezfC?event=1430500169299922965',
-     'https://involutionhell.com/docs/jobs/event-keynote/event-takeway',
-     'interview,mock', 'archived'),
-    ('Coffee Chat',      '邀请业界嘉宾小范围交流，聊 career path、求职反思、日常 dev 体感。', '/event/coffeeChat.webp',
-     'https://discord.com/invite/8AQZj7sa?event=1432010537402761348',
-     'https://involutionhell.com/docs/jobs/event-keynote/coffee-chat',
-     'career,chat', 'archived'),
-    ('Career Journey',   '资深从业者分享完整职业路径 + 关键决策点。', '/event/careerJourney.webp',
-     'https://discord.com/invite/8AQZj7sa?event=1432010537402761348',
-     'https://involutionhell.com/docs/jobs/event-keynote/event-takeway',
-     'career,sharing', 'archived'),
-    ('Open.Onion',       '持续进行中的开源 / 内部项目协作节奏，参与即获得 contributor 标签。', '/event/openOnion.webp',
-     'https://discord.gg/kJZFMr5chU?event=1477581193582088304',
-     NULL,
-     'project,open-source', 'published')
-ON CONFLICT DO NOTHING;
+SELECT seed.title, seed.description, seed.cover_url, seed.discord_link,
+       seed.playback_url, seed.tags, seed.status
+FROM (
+    VALUES
+        ('Mock Interview',   '模拟面试专场：匹配面试官 1v1，结束即反馈，积累真实面试体感。', '/event/mockInterview.webp',
+         'https://discord.gg/QHsjqezfC?event=1430500169299922965',
+         'https://involutionhell.com/docs/jobs/event-keynote/event-takeway',
+         'interview,mock', 'archived'),
+        ('Coffee Chat',      '邀请业界嘉宾小范围交流，聊 career path、求职反思、日常 dev 体感。', '/event/coffeeChat.webp',
+         'https://discord.com/invite/8AQZj7sa?event=1432010537402761348',
+         'https://involutionhell.com/docs/jobs/event-keynote/coffee-chat',
+         'career,chat', 'archived'),
+        ('Career Journey',   '资深从业者分享完整职业路径 + 关键决策点。', '/event/careerJourney.webp',
+         'https://discord.com/invite/8AQZj7sa?event=1432010537402761348',
+         'https://involutionhell.com/docs/jobs/event-keynote/event-takeway',
+         'career,sharing', 'archived'),
+        ('Open.Onion',       '持续进行中的开源 / 内部项目协作节奏，参与即获得 contributor 标签。', '/event/openOnion.webp',
+         'https://discord.gg/kJZFMr5chU?event=1477581193582088304',
+         NULL,
+         'project,open-source', 'published')
+) AS seed(title, description, cover_url, discord_link, playback_url, tags, status)
+WHERE NOT EXISTS (
+    SELECT 1 FROM events e WHERE e.title = seed.title
+);

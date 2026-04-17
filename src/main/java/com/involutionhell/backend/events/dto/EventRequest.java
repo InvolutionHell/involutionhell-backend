@@ -52,6 +52,13 @@ public record EventRequest(
 
     private static String joinTags(List<String> tags) {
         if (tags == null || tags.isEmpty()) return "";
-        return String.join(",", tags.stream().map(String::trim).filter(s -> !s.isEmpty()).toList());
+        // 先过滤 null 再 trim：JSON 客户端允许数组里放 null，裸调 String::trim 会 NPE → 500
+        return String.join(
+                ",",
+                tags.stream()
+                        .filter(tag -> tag != null)
+                        .map(String::trim)
+                        .filter(s -> !s.isEmpty())
+                        .toList());
     }
 }

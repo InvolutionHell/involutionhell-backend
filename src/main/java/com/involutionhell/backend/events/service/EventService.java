@@ -5,7 +5,9 @@ import com.involutionhell.backend.events.repository.EventInterestRepository;
 import com.involutionhell.backend.events.repository.EventRepository;
 import org.springframework.stereotype.Service;
 
+import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -61,6 +63,14 @@ public class EventService {
     /** 某活动当前"感兴趣"人数。公开接口使用。 */
     public long countInterest(long eventId) {
         return interestRepository.countByEvent(eventId);
+    }
+
+    /**
+     * 批量拿多场活动的兴趣人数。列表接口用，避免 N+1。
+     * 返回 map 中不存在的 key 表示该活动兴趣人数为 0，调用方自己 getOrDefault 兜底。
+     */
+    public Map<Long, Long> countInterestByEventIds(Collection<Long> eventIds) {
+        return interestRepository.countByEventIds(eventIds);
     }
 
     /** 当前登录用户是否对某活动感兴趣。匿名调用方需短路传 false，不要调这个。 */

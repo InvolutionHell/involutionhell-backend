@@ -46,5 +46,9 @@ CREATE TABLE IF NOT EXISTS event_interests (
     event_id   BIGINT      NOT NULL,
     user_id    BIGINT      NOT NULL,
     created_at TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (event_id, user_id)
+    PRIMARY KEY (event_id, user_id),
+    -- 补齐外键与 ON DELETE CASCADE 和生产 schema 对齐，否则 H2 测试既不能覆盖
+    -- "删 event 级联清 interest" 这个关键路径，也可能插入不存在的 event/user 产生脏数据
+    FOREIGN KEY (event_id) REFERENCES events(id)        ON DELETE CASCADE,
+    FOREIGN KEY (user_id)  REFERENCES user_accounts(id) ON DELETE CASCADE
 );
