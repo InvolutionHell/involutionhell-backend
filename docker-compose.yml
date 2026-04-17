@@ -90,8 +90,15 @@ services:
       PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-change_me}
       PGADMIN_CONFIG_SERVER_MODE: "False"
       PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
+      # pgAdmin 被 iframe 嵌入在 involutionhell.com 主站的 /admin/database 页里，
+      # 流量路径：involutionhell.com（Vercel 前端） → iframe → api.involutionhell.com/admin/pgadmin/*
+      # SCRIPT_NAME 让 pgAdmin 生成的所有 URL 自带 /admin/pgadmin 前缀，
+      # X_FRAME_OPTIONS 清空让 Caddy 层自己控制 CSP frame-ancestors。
+      SCRIPT_NAME: "/admin/pgadmin"
+      PGADMIN_CONFIG_X_FRAME_OPTIONS: "''"
+      PGADMIN_CONFIG_WTF_CSRF_SSL_STRICT: "False"
     ports:
-      - "8082:80"
+      - "127.0.0.1:8082:80"
     volumes:
       - pgadmin-data:/var/lib/pgadmin
       - ./docker/pgadmin/servers.json:/pgadmin4/servers.json:ro

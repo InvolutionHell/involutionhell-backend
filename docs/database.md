@@ -22,9 +22,36 @@ docker-compose.yml 里四个相关服务：
 
 ### 登录 pgAdmin
 
-1. 浏览器打开 `http://<server>:8082`
-2. 用户名密码见 `.env` 的 `PGADMIN_EMAIL` / `PGADMIN_PASSWORD`
-3. 左侧树直接显示预注册的 `InvolutionHell (local)`，双击连上就能用
+**生产环境（推荐）**：通过主站 iframe 进入
+1. `involutionhell.com` 登录 admin 账号
+2. 个人主页 → "管理员界面" → "数据库管理"
+3. 页面内 iframe 加载 `api.involutionhell.com/admin/pgadmin/`
+4. 用 `.env` 的 `PGADMIN_EMAIL` / `PGADMIN_PASSWORD` 登录 pgAdmin
+
+**本机联调**：`http://<server>:8082`（仅 127.0.0.1 监听，不对外暴露，需 SSH 转发）
+
+左侧树显示预注册的 `InvolutionHell (local)`，双击即连。
+
+### 反向代理 / iframe 架构
+
+```
+involutionhell.com（Vercel / Next.js）
+  └─ /admin/database 页面 iframe https://api.involutionhell.com/admin/pgadmin/
+       └─ Caddy (global-caddy-gateway, 本机 host 网络)
+            └─ 匹配 /admin/pgadmin/* → 127.0.0.1:8082 (pgAdmin 容器)
+```
+
+pgAdmin 容器里的关键环境变量：
+- `SCRIPT_NAME=/admin/pgadmin` — 所有自动生成的 URL 自带前缀，
+  保证 iframe 里点击链接走对
+- `PGADMIN_CONFIG_X_FRAME_OPTIONS="''"` — 清空默认的 DENY，
+  由 Caddy 改用 CSP `frame-ancestors` 控制
+- `PGADMIN_CONFIG_WTF_CSRF_SSL_STRICT=False` — 跨子域 iframe
+  情况下 CSRF 严格模式会误伤，关掉
+
+Caddy 端响应头改写：剥 `X-Frame-Options`，加
+`Content-Security-Policy: frame-ancestors 'self' https://involutionhell.com …`。
+配置位置：`/home/ubuntu/caddy-gateway/Caddyfile`。
 
 ### 手动备份（立刻打一个快照）
 
