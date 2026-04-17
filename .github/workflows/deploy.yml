@@ -41,8 +41,11 @@ jobs:
             # 构建新镜像（失败则整个 workflow 标红，旧容器不受影响）
             docker build -t involutionhell-backend:latest .
 
-            # 用新镜像重启服务
-            docker compose up -d --remove-orphans
+            # 用新镜像重启服务。
+            # --force-recreate 是必须的：compose 看 image 名（始终是 :latest）没变就不会重建容器，
+            # 结果 CI 的 docker build 虽然把 :latest 标签指向新 sha，但运行中容器仍绑死老 sha，
+            # 部署一直 "success" 但实际 JAR 没换。用 --force-recreate backend 强制销毁重建。
+            docker compose up -d --remove-orphans --force-recreate backend
 
             # 等待服务启动，最多 60 秒
             echo "等待服务健康检查..."
