@@ -30,15 +30,21 @@ public class EventInterestRepository {
         this.namedJdbc = new NamedParameterJdbcTemplate(jdbc);
     }
 
-    /** 添加感兴趣记录。幂等：同一 (event, user) 已存在时不报错。 */
+    /**
+     * 添加感兴趣记录。幂等：同一 (event, user) 已存在时不报错。
+     *
+     * 为什么不用 ON CONFLICT：H2 在 PostgreSQL MODE 下也不保证支持完整 ON CONFLICT
+     * 语法（JdbcSQLSyntaxError，而不是 DuplicateKeyException），测试 / 生产方言
+     * 一致性更重要。纯 INSERT + PK 唯一约束触发的 DuplicateKeyException 在两种
+     * 数据库行为一致——吞掉即可保证幂等语义。
+     */
     public void add(long eventId, long userId) {
         try {
             jdbc.update(
-                    "INSERT INTO event_interests (event_id, user_id, created_at) VALUES (?, ?, NOW()) "
-                            + "ON CONFLICT (event_id, user_id) DO NOTHING",
+                    "INSERT INTO event_interests (event_id, user_id, created_at) VALUES (?, ?, NOW())",
                     eventId, userId);
         } catch (DuplicateKeyException ignored) {
-            // H2 或其他驱动可能走 DuplicateKey 分支，一起吞掉保持幂等
+            // 已经存在的 (event, user) 组合，幂等吞掉
         }
     }
 

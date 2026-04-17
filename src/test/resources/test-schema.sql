@@ -27,7 +27,7 @@ MERGE INTO user_accounts (username, password_hash, display_name, enabled, roles,
 -- Events 相关表（测试用 H2 语法）。JSONB 用 VARCHAR 代替，与 user_accounts.preferences 的策略一致
 CREATE TABLE IF NOT EXISTS events (
     id             BIGSERIAL    PRIMARY KEY,
-    title          VARCHAR(255) NOT NULL,
+    title          VARCHAR(255) NOT NULL UNIQUE,
     description    TEXT         NOT NULL DEFAULT '',
     cover_url      VARCHAR(500),
     start_time     TIMESTAMP,
