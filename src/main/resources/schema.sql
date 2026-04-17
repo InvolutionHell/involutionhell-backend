@@ -106,3 +106,28 @@ VALUES
      NULL,
      'project,open-source', 'published')
 ON CONFLICT (title) DO NOTHING;
+
+-- Chat / Message：前端 AI 对话历史持久化。
+-- 历史：原 Next.js API route 用 Prisma 直连 Neon 写入；2026-04-17 把 Neon
+-- 换成自建 Docker PG，Prisma 留在前端会导致前端写到 Neon 旧库、后端读自建
+-- PG 的脏数据分叉。迁移方案 A：前端 onFinish 改 fetch backend /api/chat/sessions/save，
+-- 持久化逻辑统一走后端。表名用 Prisma 风格的 PascalCase + 带引号列名，保留与
+-- 原 Prisma schema 兼容，避免前端在切流量期间拿旧 client 读取时失败。
+CREATE TABLE IF NOT EXISTS "Chat" (
+    id          TEXT         PRIMARY KEY,
+    "userId"    INTEGER,
+    "createdAt" TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    "updatedAt" TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS "Chat_userId_idx" ON "Chat"("userId");
+
+CREATE TABLE IF NOT EXISTS "Message" (
+    id          TEXT         PRIMARY KEY,
+    "chatId"    TEXT         NOT NULL REFERENCES "Chat"(id) ON DELETE CASCADE,
+    role        TEXT         NOT NULL,
+    content     TEXT         NOT NULL,
+    "createdAt" TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS "Message_chatId_idx" ON "Message"("chatId");
