@@ -71,6 +71,9 @@ jobs:
             # 用备份镜像回滚
             echo "❌ 健康检查失败，正在回滚到上一个版本..."
             docker tag involutionhell-backend:rollback involutionhell-backend:latest
-            docker compose up -d --remove-orphans
+            # 回滚同样需要 --force-recreate：rollback tag 覆盖回 latest 后 image 名依旧是 :latest，
+            # compose 看不出变化就不会重建容器，运行中容器仍绑死着失败那版的 sha，回滚等于没回。
+            # --no-deps 避免顺带重建 postgres 等依赖服务，减小爆炸半径。
+            docker compose up -d --remove-orphans --force-recreate --no-deps backend
             echo "回滚完成，workflow 标红以提示本次部署失败"
             exit 1
