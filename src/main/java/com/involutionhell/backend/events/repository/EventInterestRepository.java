@@ -2,9 +2,14 @@ package com.involutionhell.backend.events.repository;
 
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
 
+import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * event_interests 表的数据访问。语义和 FollowService 类似——
@@ -17,20 +22,29 @@ import java.util.List;
 public class EventInterestRepository {
 
     private final JdbcTemplate jdbc;
+    private final NamedParameterJdbcTemplate namedJdbc;
 
     public EventInterestRepository(JdbcTemplate jdbc) {
         this.jdbc = jdbc;
+        // 批量 count 用 named parameter 的 IN 子句，比自己拼 "?,?,?" 更安全
+        this.namedJdbc = new NamedParameterJdbcTemplate(jdbc);
     }
 
-    /** 添加感兴趣记录。幂等：同一 (event, user) 已存在时不报错。 */
+    /**
+     * 添加感兴趣记录。幂等：同一 (event, user) 已存在时不报错。
+     *
+     * 为什么不用 ON CONFLICT：H2 在 PostgreSQL MODE 下也不保证支持完整 ON CONFLICT
+     * 语法（JdbcSQLSyntaxError，而不是 DuplicateKeyException），测试 / 生产方言
+     * 一致性更重要。纯 INSERT + PK 唯一约束触发的 DuplicateKeyException 在两种
+     * 数据库行为一致——吞掉即可保证幂等语义。
+     */
     public void add(long eventId, long userId) {
         try {
             jdbc.update(
-                    "INSERT INTO event_interests (event_id, user_id, created_at) VALUES (?, ?, NOW()) "
-                            + "ON CONFLICT (event_id, user_id) DO NOTHING",
+                    "INSERT INTO event_interests (event_id, user_id, created_at) VALUES (?, ?, NOW())",
                     eventId, userId);
         } catch (DuplicateKeyException ignored) {
-            // H2 或其他驱动可能走 DuplicateKey 分支，一起吞掉保持幂等
+            // 已经存在的 (event, user) 组合，幂等吞掉
         }
     }
 
@@ -47,6 +61,26 @@ public class EventInterestRepository {
                 "SELECT COUNT(*) FROM event_interests WHERE event_id = ?",
                 Long.class, eventId);
         return cnt != null ? cnt : 0L;
+    }
+
+    /**
+     * 批量统计多场活动的兴趣人数，避免列表接口 N+1 查询。
+     *
+     * 一次 GROUP BY 查完返回 map；没出现在结果里的 event id（即兴趣人数为 0）调用方
+     * 自己 getOrDefault(id, 0L) 兜底。传入空集合直接返回空 map，不打 DB。
+     */
+    public Map<Long, Long> countByEventIds(Collection<Long> eventIds) {
+        if (eventIds == null || eventIds.isEmpty()) return Map.of();
+        Map<Long, Long> result = new HashMap<>();
+        MapSqlParameterSource params = new MapSqlParameterSource("ids", eventIds);
+        namedJdbc.query(
+                "SELECT event_id, COUNT(*) AS cnt FROM event_interests "
+                        + "WHERE event_id IN (:ids) GROUP BY event_id",
+                params,
+                rs -> {
+                    result.put(rs.getLong("event_id"), rs.getLong("cnt"));
+                });
+        return result;
     }
 
     /** 当前登录用户是否对某活动感兴趣。匿名调用方需自己短路 false，不要调这个。 */

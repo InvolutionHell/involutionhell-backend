@@ -27,16 +27,21 @@ VALUES ('admin',   'ad89b64d66caa8e30e5d5ce4a9763f4ecc205814c412175f3e2c50027471
        ('auditor', 'ccabaaba054fb98905b5b9ee47174f57cb6088e04b1526f08b872dc06eaa6bb9', 'Auditor', TRUE, 'auditor', 'user:profile:read,user:center:read')
 ON CONFLICT (username) DO NOTHING;
 
--- 站点维护者（GitHub OAuth 登录后由 sync 服务补 github_id；此处按 username 打 admin role）
--- 生产 Neon 上这些账号是 GitHub OAuth 登录后由 AuthService 自动创建的，所以用
--- ON CONFLICT DO UPDATE 幂等升级角色，避免漏 seed。
-INSERT INTO user_accounts (username, password_hash, display_name, enabled, roles, permissions)
-VALUES ('longsizhuo', '', 'Siz Long', TRUE, 'admin,user', 'user:profile:read,user:center:read,user:center:manage'),
-       ('Mira190',    '', 'Mira',     TRUE, 'admin,user', 'user:profile:read,user:center:read,user:center:manage'),
-       ('Crokily',    '', 'Crokily',  TRUE, 'admin,user', 'user:profile:read,user:center:read,user:center:manage')
-ON CONFLICT (username) DO UPDATE
-    SET roles       = 'admin,user',
-        permissions = 'user:profile:read,user:center:read,user:center:manage';
+-- 站点超管（superadmin）升级：
+-- 原先尝试按 GitHub handle 做 seed，但 AuthService.loginByGithub 创建的 username 是
+-- "github_{githubId}" 格式，seed 成其他 username 会插一批永远没人用的死账号。
+-- 正确做法：
+--   1. superadmin 首次 GitHub OAuth 登录过站点（AuthService 会建 github_{id} 账号）
+--   2. 在 DB 跑一次下面这条 SQL 升级 roles；之后 superadmin 在 /admin/users 页面
+--      给其他维护者打 admin 角色，不再碰 DB
+--
+--   UPDATE user_accounts
+--   SET roles = 'superadmin,admin,user',
+--       permissions = 'user:profile:read,user:center:read,user:center:manage'
+--   WHERE github_id = 114939201;   -- longsizhuo，按需加其他 superadmin
+--
+-- superadmin 语义：拥有全部 admin 权限 + 能管理其他人的 admin 角色。
+-- API 层禁止通过 /api/admin/users 接口授予或撤销 superadmin（防误操作锁死后台）。
 
 -- =============================================================================
 -- Events（活动）相关表
@@ -45,9 +50,11 @@ ON CONFLICT (username) DO UPDATE
 -- 原先维护在前端 data/event.json，新增/改时间都要改代码发版，迁到后端让管理员自助编辑。
 
 -- 活动主表
+-- title UNIQUE 给 seed 做真正的幂等（ON CONFLICT(title) DO NOTHING）兜底，顺便防
+-- 管理员误建同名活动。实际产品上两场同名活动毫无意义，这个约束的代价是 0。
 CREATE TABLE IF NOT EXISTS events (
     id             BIGSERIAL    PRIMARY KEY,
-    title          VARCHAR(255) NOT NULL,
+    title          VARCHAR(255) NOT NULL UNIQUE,
     description    TEXT         NOT NULL DEFAULT '',
     cover_url      VARCHAR(500),
     start_time     TIMESTAMPTZ,                        -- 活动开始时间，null 表示未排期
@@ -76,8 +83,10 @@ CREATE TABLE IF NOT EXISTS event_interests (
 
 CREATE INDEX IF NOT EXISTS idx_event_interests_user_id ON event_interests(user_id);
 
--- 种子：原来 data/event.json 里的 4 条活动（startTime 不填，先只保留元信息；
--- 管理员登录后在 /admin/events 里补时间再 publish）
+-- 种子：原来 data/event.json 里的 4 条活动。
+-- 幂等策略：title 是 UNIQUE 约束列，重跑 schema.sql 或并发初始化时由 Postgres
+-- 原生 ON CONFLICT(title) DO NOTHING 保证原子幂等，不会插重复。
+-- startTime / endTime 先不填，管理员登录后在 /admin/events 里补时间再 publish。
 INSERT INTO events (title, description, cover_url, discord_link, playback_url, tags, status)
 VALUES
     ('Mock Interview',   '模拟面试专场：匹配面试官 1v1，结束即反馈，积累真实面试体感。', '/event/mockInterview.webp',
@@ -96,4 +105,4 @@ VALUES
      'https://discord.gg/kJZFMr5chU?event=1477581193582088304',
      NULL,
      'project,open-source', 'published')
-ON CONFLICT DO NOTHING;
+ON CONFLICT (title) DO NOTHING;
