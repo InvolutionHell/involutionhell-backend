@@ -88,6 +88,9 @@ services:
     environment:
       PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@involutionhell.com}
       PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-change_me}
+      # pgAdmin 保持 SERVER_MODE=False（desktop / single-user，无登录页）——
+      # 关键前提：**外层 Caddy 做 forward_auth**，只有带合法 admin satoken
+      # cookie 的请求才被代理到这里。直接对公网暴露 8082 绝对不行。
       PGADMIN_CONFIG_SERVER_MODE: "False"
       PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
       # pgAdmin 被 iframe 嵌入在 involutionhell.com 主站的 /admin/database 页里，
@@ -105,9 +108,11 @@ services:
       # pgpass 主机文件必须是 UID 5050 所有且 0600，否则 pgAdmin 拒绝加载。
       # 用 `sudo chown 5050:5050 docker/pgadmin/pgpass && sudo chmod 600 …` 设好。
       - ./docker/pgadmin/pgpass:/tmp/pgpass
-      # 备份卷挂到 pgAdmin 用户默认存储目录，这样在 Restore 对话框里能直接选到
-      # pg-backup 容器每天生成的 dump 文件。路径格式：<email 替换 @ 为 _>/
-      - pg-backups:/var/lib/pgadmin/storage/admin_involutionhell.com/backups
+      # 备份卷挂到容器内 /backups（只读）。SERVER_MODE=True 下 /var/lib/pgadmin/
+      # storage/<email>/ 目录由 pgAdmin 运行时自建并校验 5050 所有权，把 root
+      # 所有的 pg-backups 挂进去会触发 "user does not have permission" 启动失败。
+      # 在 pgAdmin Restore 对话框里手填路径 /backups/daily/xxx.dump 即可。
+      - pg-backups:/backups:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -126,7 +131,12 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-involution_hell}
       POSTGRES_USER: ${POSTGRES_USER:-involution}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+      # -Fc 产出 custom 格式（.dump），pgAdmin 右键 Restore 直接一键恢复；
+      # 镜像包装脚本默认会 gzip，这里必须显式设 BACKUP_SUFFIX=.dump 且不加 gzip
+      # 选项，让镜像按 custom 格式直接落盘。
       POSTGRES_EXTRA_OPTS: "-Fc --blobs"
+      BACKUP_SUFFIX: ".dump"
+      BACKUP_COMPRESS: "none"
       SCHEDULE: "@daily"
       BACKUP_KEEP_DAYS: 30
       BACKUP_KEEP_WEEKS: 8
