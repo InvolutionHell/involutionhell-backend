@@ -77,9 +77,84 @@ services:
     networks:
       - InvolutionHell-net
 
+  # pgAdmin：PostgreSQL 的 Web GUI，带完整的备份/恢复按钮。
+  # 登录 http://<host>:8082，预注册服务器见 docker/pgadmin/servers.json，
+  # 密码通过 /pgpass 自动填充，不需要每次手输。
+  # 备份卷挂到 /var/lib/pgadmin/storage/.../backups，在 Restore 对话框里直接看得到。
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: involution-pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@involutionhell.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-change_me}
+      # pgAdmin 保持 SERVER_MODE=False（desktop / single-user，无登录页）——
+      # 关键前提：**外层 Caddy 做 forward_auth**，只有带合法 admin satoken
+      # cookie 的请求才被代理到这里。直接对公网暴露 8082 绝对不行。
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
+      # pgAdmin 被 iframe 嵌入在 involutionhell.com 主站的 /admin/database 页里，
+      # 流量路径：involutionhell.com（Vercel 前端） → iframe → api.involutionhell.com/admin/pgadmin/*
+      # SCRIPT_NAME 让 pgAdmin 生成的所有 URL 自带 /admin/pgadmin 前缀，
+      # X_FRAME_OPTIONS 清空让 Caddy 层自己控制 CSP frame-ancestors。
+      SCRIPT_NAME: "/admin/pgadmin"
+      PGADMIN_CONFIG_X_FRAME_OPTIONS: "''"
+      PGADMIN_CONFIG_WTF_CSRF_SSL_STRICT: "False"
+    ports:
+      - "127.0.0.1:8082:80"
+    volumes:
+      - pgadmin-data:/var/lib/pgadmin
+      - ./docker/pgadmin/servers.json:/pgadmin4/servers.json:ro
+      # pgpass 主机文件必须是 UID 5050 所有且 0600，否则 pgAdmin 拒绝加载。
+      # 用 `sudo chown 5050:5050 docker/pgadmin/pgpass && sudo chmod 600 …` 设好。
+      - ./docker/pgadmin/pgpass:/tmp/pgpass
+      # 备份卷挂到容器内 /backups（只读）。SERVER_MODE=True 下 /var/lib/pgadmin/
+      # storage/<email>/ 目录由 pgAdmin 运行时自建并校验 5050 所有权，把 root
+      # 所有的 pg-backups 挂进去会触发 "user does not have permission" 启动失败。
+      # 在 pgAdmin Restore 对话框里手填路径 /backups/daily/xxx.dump 即可。
+      - pg-backups:/backups:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - InvolutionHell-net
+
+  # 自动定时备份：每天 03:00 对 postgres 容器做 pg_dump（custom format），
+  # 输出到共享卷 pg-backups，pgAdmin 能直接在 Restore 对话框里看到这些文件。
+  # 保留最近 30 天日备 / 8 周周备 / 12 个月月备。
+  pg-backup:
+    image: prodrigestivill/postgres-backup-local:18-alpine
+    container_name: involution-pg-backup
+    restart: unless-stopped
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: ${POSTGRES_DB:-involution_hell}
+      POSTGRES_USER: ${POSTGRES_USER:-involution}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+      # -Fc 产出 custom 格式（.dump），pgAdmin 右键 Restore 直接一键恢复；
+      # 镜像包装脚本默认会 gzip，这里必须显式设 BACKUP_SUFFIX=.dump 且不加 gzip
+      # 选项，让镜像按 custom 格式直接落盘。
+      POSTGRES_EXTRA_OPTS: "-Fc --blobs"
+      BACKUP_SUFFIX: ".dump"
+      BACKUP_COMPRESS: "none"
+      SCHEDULE: "@daily"
+      BACKUP_KEEP_DAYS: 30
+      BACKUP_KEEP_WEEKS: 8
+      BACKUP_KEEP_MONTHS: 12
+      HEALTHCHECK_PORT: 8080
+    volumes:
+      - pg-backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - InvolutionHell-net
+
 networks:
   InvolutionHell-net:
     driver: bridge
 
 volumes:
   involution-postgres-data:
+  pgadmin-data:
+  pg-backups:
