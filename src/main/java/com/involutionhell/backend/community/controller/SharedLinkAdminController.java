@@ -65,7 +65,7 @@ public class SharedLinkAdminController {
             return ResponseEntity.status(HttpStatus.NOT_FOUND)
                     .body(new ApiResponse<>(false, "link not found", null));
         }
-        linkRepo.updateStatus(id, SharedLinkStatus.APPROVED, null);
+        linkRepo.transitionStatus(id, SharedLinkStatus.APPROVED, null);
         log.info("admin approve shared-link id={}", id);
         return linkRepo.findById(id)
                 .map(link -> ResponseEntity.ok(ApiResponse.ok(SharedLinkView.from(link))))
@@ -83,7 +83,8 @@ public class SharedLinkAdminController {
                     .body(new ApiResponse<>(false, "link not found", null));
         }
         String reason = body != null ? body.getOrDefault("reason", null) : null;
-        linkRepo.updateStatus(id, SharedLinkStatus.REJECTED, reason);
+        // reason 现在落到 admin_note 列（之前 updateStatus 在非 ARCHIVED 时会静默丢弃）
+        linkRepo.transitionStatus(id, SharedLinkStatus.REJECTED, reason);
         log.info("admin reject shared-link id={} reason={}", id, reason);
         return linkRepo.findById(id)
                 .map(link -> ResponseEntity.ok(ApiResponse.ok(SharedLinkView.from(link))))

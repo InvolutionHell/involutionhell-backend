@@ -164,16 +164,20 @@ CREATE TABLE IF NOT EXISTS shared_links (
     status          VARCHAR(32)  NOT NULL DEFAULT 'PENDING',
     report_count    INT          NOT NULL DEFAULT 0,
     archived_at     TIMESTAMPTZ,                       -- 失效时间，ARCHIVED 时写入
-    archived_reason VARCHAR(64),                       -- link_dead / manual / spam
+    archived_reason VARCHAR(64),                       -- 系统归档原因：link_dead / manual / spam
+    admin_note      TEXT,                              -- 管理员人工审核备注（reject 原因 / approve 评语）
     probe_fail_count INT         NOT NULL DEFAULT 0,   -- M9 失效探活连续失败计数，>=2 → ARCHIVED
     probe_last_at   TIMESTAMPTZ,                       -- 最近一次 HEAD 探活时间，用于跳过刚跑过的
     created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
--- 已有库兼容（部署过 M1 版本的环境）：补上 probe 两列
+-- 已有库兼容（部署过 M1 版本的环境）：补上 probe 两列 + admin_note
 ALTER TABLE shared_links ADD COLUMN IF NOT EXISTS probe_fail_count INT NOT NULL DEFAULT 0;
 ALTER TABLE shared_links ADD COLUMN IF NOT EXISTS probe_last_at TIMESTAMPTZ;
+-- admin_note：管理员 approve/reject 时的备注（reject 原因、approve 评语等）
+-- 与 archived_reason 区分：后者是系统归档原因（link_dead 等），前者是人工审核原因
+ALTER TABLE shared_links ADD COLUMN IF NOT EXISTS admin_note TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_shared_links_status_created ON shared_links(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_shared_links_category       ON shared_links(category) WHERE status = 'APPROVED';

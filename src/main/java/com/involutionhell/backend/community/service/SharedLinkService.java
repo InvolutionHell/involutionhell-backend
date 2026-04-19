@@ -149,7 +149,7 @@ public class SharedLinkService {
         if (total >= REPORT_THRESHOLD) {
             Optional<SharedLink> link = linkRepo.findById(linkId);
             if (link.isPresent() && SharedLinkStatus.APPROVED.equals(link.get().status())) {
-                linkRepo.updateStatus(linkId, SharedLinkStatus.PENDING_MANUAL, null);
+                linkRepo.transitionStatus(linkId, SharedLinkStatus.PENDING_MANUAL, null);
                 log.info("shared-link auto-demoted to PENDING_MANUAL by reports: id={}", linkId);
                 return true;
             }

@@ -65,9 +65,11 @@ public class JdbcSharedLinkRepository implements SharedLinkRepository {
     @Override
     public SharedLink insert(SharedLink draft) {
         KeyHolder kh = new GeneratedKeyHolder();
+        // flags 列 Postgres 侧是 JSONB，H2 测试侧是 VARCHAR。用 setObject(Types.OTHER) + JSON 字符串
+        // 的方式让两种方言都能吃进去（与 JdbcEventRepository.speakers 的做法保持一致）。
         String sql = "INSERT INTO shared_links "
                 + "(submitter_id, url, url_hash, host, recommendation, status, flags) "
-                + "VALUES (?, ?, ?, ?, ?, ?, ?::jsonb)";
+                + "VALUES (?, ?, ?, ?, ?, ?, ?)";
         jdbc.update(conn -> {
             PreparedStatement ps = conn.prepareStatement(sql, new String[]{"id"});
             ps.setLong(1, draft.submitterId());
@@ -77,7 +79,7 @@ public class JdbcSharedLinkRepository implements SharedLinkRepository {
             if (draft.recommendation() == null) ps.setNull(5, Types.VARCHAR);
             else ps.setString(5, draft.recommendation());
             ps.setString(6, draft.status() != null ? draft.status() : SharedLinkStatus.PENDING);
-            ps.setString(7, serializeFlags(draft.flags()));
+            ps.setObject(7, serializeFlags(draft.flags()), Types.OTHER);
             return ps;
         }, kh);
         Long id = kh.getKey() != null ? kh.getKey().longValue() : null;
@@ -133,27 +135,42 @@ public class JdbcSharedLinkRepository implements SharedLinkRepository {
                                  String ogCover, String ogSiteName, String ogFetchError,
                                  String category, Map<String, Boolean> flags,
                                  String status) {
-        jdbc.update(
-                "UPDATE shared_links SET "
-                        + "og_title = ?, og_description = ?, og_cover = ?, og_site_name = ?, "
-                        + "og_fetch_error = ?, category = ?, flags = ?::jsonb, status = ?, "
-                        + "updated_at = NOW() WHERE id = ?",
-                ogTitle, ogDescription, ogCover, ogSiteName,
-                ogFetchError, category, serializeFlags(flags), status, id);
+        // flags 同 insert：走 Types.OTHER 兼容 PG JSONB / H2 VARCHAR。
+        jdbc.update(conn -> {
+            PreparedStatement ps = conn.prepareStatement(
+                    "UPDATE shared_links SET "
+                            + "og_title = ?, og_description = ?, og_cover = ?, og_site_name = ?, "
+                            + "og_fetch_error = ?, category = ?, flags = ?, status = ?, "
+                            + "updated_at = NOW() WHERE id = ?");
+            ps.setString(1, ogTitle);
+            ps.setString(2, ogDescription);
+            ps.setString(3, ogCover);
+            ps.setString(4, ogSiteName);
+            ps.setString(5, ogFetchError);
+            ps.setString(6, category);
+            ps.setObject(7, serializeFlags(flags), Types.OTHER);
+            ps.setString(8, status);
+            ps.setLong(9, id);
+            return ps;
+        });
     }
 
     @Override
-    public void updateStatus(Long id, String status, String archivedReason) {
-        if (SharedLinkStatus.ARCHIVED.equals(status)) {
-            jdbc.update(
-                    "UPDATE shared_links SET status = ?, archived_at = NOW(), archived_reason = ?, "
-                            + "updated_at = NOW() WHERE id = ?",
-                    status, archivedReason, id);
-        } else {
-            jdbc.update(
-                    "UPDATE shared_links SET status = ?, updated_at = NOW() WHERE id = ?",
-                    status, id);
-        }
+    public void transitionStatus(Long id, String status, String adminNote) {
+        // adminNote 为 null 时仍覆盖写入 null，语义：每次状态迁移都刷新 admin_note。
+        // 如果未来想"保留历史 note"，再引入 admin_note_log 表（v1 不做）。
+        jdbc.update(
+                "UPDATE shared_links SET status = ?, admin_note = ?, updated_at = NOW() "
+                        + "WHERE id = ?",
+                status, adminNote, id);
+    }
+
+    @Override
+    public void archive(Long id, String archivedReason) {
+        jdbc.update(
+                "UPDATE shared_links SET status = ?, archived_at = NOW(), archived_reason = ?, "
+                        + "updated_at = NOW() WHERE id = ?",
+                SharedLinkStatus.ARCHIVED, archivedReason, id);
     }
 
     @Override

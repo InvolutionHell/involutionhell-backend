@@ -34,8 +34,15 @@ public interface SharedLinkRepository {
                           String category, java.util.Map<String, Boolean> flags,
                           String status);
 
-    /** 仅改 status（管理员通过/拒绝、失效归档等）。 */
-    void updateStatus(Long id, String status, String archivedReason);
+    /**
+     * 通用状态迁移（admin approve/reject / 举报自动降级等）。
+     * adminNote 可空；非空时落到 admin_note 列。**不触**动 archived_at/archived_reason。
+     * ARCHIVED 状态请走 {@link #archive}。
+     */
+    void transitionStatus(Long id, String status, String adminNote);
+
+    /** 归档失效链接：落 status=ARCHIVED + archived_at=NOW + archived_reason。 */
+    void archive(Long id, String archivedReason);
 
     /** +1 report_count 并返回新值。3 及以上由 Service 层决定是否转 PENDING_MANUAL。 */
     int incrementReportCount(Long id);

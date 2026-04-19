@@ -89,9 +89,7 @@ public class SharedLinkArchiveJob {
                     int newFails = linkRepo.incrementProbeFail(target.id());
                     failCount++;
                     if (newFails >= ARCHIVE_THRESHOLD) {
-                        linkRepo.updateStatus(target.id(),
-                                SharedLinkStatus.ARCHIVED,
-                                ARCHIVED_REASON_LINK_DEAD);
+                        linkRepo.archive(target.id(), ARCHIVED_REASON_LINK_DEAD);
                         archivedCount++;
                         log.info("archive-job: archived id={} after {} consecutive fails",
                                 target.id(), newFails);
@@ -106,9 +104,7 @@ public class SharedLinkArchiveJob {
                     int newFails = linkRepo.incrementProbeFail(target.id());
                     failCount++;
                     if (newFails >= ARCHIVE_THRESHOLD) {
-                        linkRepo.updateStatus(target.id(),
-                                SharedLinkStatus.ARCHIVED,
-                                ARCHIVED_REASON_LINK_DEAD);
+                        linkRepo.archive(target.id(), ARCHIVED_REASON_LINK_DEAD);
                         archivedCount++;
                     }
                 } catch (Exception inner) {
