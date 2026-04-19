@@ -8,6 +8,8 @@ import com.involutionhell.backend.community.repository.SharedLinkRepository;
 import com.involutionhell.backend.community.util.UrlNormalizer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 
@@ -41,9 +43,21 @@ public class SharedLinkService {
     private final SharedLinkRepository linkRepo;
     private final LinkReportRepository reportRepo;
 
+    /**
+     * 用 @Lazy 打破循环依赖：Worker → Service → Worker。
+     * Worker 在 submit() 成功后被调用，@Lazy 确保 Spring 容器初始化顺序无冲突。
+     */
+    private SharedLinkEnrichmentWorker enrichmentWorker;
+
     public SharedLinkService(SharedLinkRepository linkRepo, LinkReportRepository reportRepo) {
         this.linkRepo = linkRepo;
         this.reportRepo = reportRepo;
+    }
+
+    @Autowired
+    @Lazy
+    public void setEnrichmentWorker(SharedLinkEnrichmentWorker enrichmentWorker) {
+        this.enrichmentWorker = enrichmentWorker;
     }
 
     /**
@@ -92,6 +106,12 @@ public class SharedLinkService {
         SharedLink saved = linkRepo.insert(draft);
         log.info("shared-link submitted: id={} submitter={} host={}",
                 saved.id(), submitterId, saved.host());
+
+        // 触发异步富化（OG 抓取 + DeepSeek 分类），不阻塞当前 HTTP 响应
+        if (enrichmentWorker != null) {
+            enrichmentWorker.enrich(saved.id());
+        }
+
         return saved;
     }
 
