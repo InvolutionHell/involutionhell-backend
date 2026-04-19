@@ -37,6 +37,10 @@ public class SaTokenConfigure implements WebMvcConfigurer {
                 // /api/events/{id}/interest 感兴趣接口需要登录，由 @SaCheckLogin 在方法级别兜底。
                 // /api/admin/events/** 不放行，走 @SaCheckRole("admin") 校验。
                 .notMatch("/api/events", "/api/events/*")
+                // Community 公开读：GET /api/community/links 列表匿名可访问。
+                // POST 提交 / 举报 / GET /mine 走方法级 @SaCheckLogin 校验。
+                // /api/admin/community/** 不放行，走 @SaCheckRole("admin") 校验。
+                .notMatch("/api/community/links")
                 .notMatch("/api/chat/sessions/save")       // AI 对话持久化（匿名 / 登录都写，登录时自动关联 userId）
                 .check(r -> StpUtil.checkLogin());         // 未登录抛出 NotLoginException
         })).addPathPatterns("/**");

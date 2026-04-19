@@ -131,3 +131,57 @@ CREATE TABLE IF NOT EXISTS "Message" (
 );
 
 CREATE INDEX IF NOT EXISTS "Message_chatId_idx" ON "Message"("chatId");
+
+-- =============================================================================
+-- Community Shared Links（社区分享链接墙）相关表
+-- =============================================================================
+-- 背景：群友日常在微信群转发公众号/知乎等文章，走 Fumadocs 贡献门槛太高。
+-- 这条链路与 Fumadocs 完全独立：用户粘 URL + 一句话推荐 → 后端抓 OG meta +
+-- DeepSeek 异步分类审核 → 通过后进 /feed 瀑布流 → 卡片点击直接跳原文。
+-- 设计见 ~/ih-wiki/Community-Shared-Links.md
+--
+-- status 枚举：
+--   PENDING         - 刚提交，异步 worker 未处理
+--   APPROVED        - 白名单 + AI 安全判定通过，公开展示
+--   PENDING_MANUAL  - 非白名单，进人工待审
+--   FLAGGED         - AI 判定 nsfw/ad/flame，进人工待审
+--   REJECTED        - 人工拒绝
+--   ARCHIVED        - 原文失效（HEAD 探活连续 2 次失败），主流不展示但作者可见
+CREATE TABLE IF NOT EXISTS shared_links (
+    id              BIGSERIAL    PRIMARY KEY,
+    submitter_id    BIGINT       NOT NULL REFERENCES user_accounts(id) ON DELETE CASCADE,
+    url             TEXT         NOT NULL,
+    url_hash        VARCHAR(64)  NOT NULL UNIQUE,      -- sha256(url) 做去重
+    host            VARCHAR(255) NOT NULL,             -- 根域，严格匹配后的规范化 host
+    recommendation  TEXT,                              -- 用户一句话推荐理由
+    og_title        TEXT,
+    og_description  TEXT,
+    og_cover        TEXT,
+    og_site_name    VARCHAR(255),
+    og_fetch_error  TEXT,                              -- OG 抓取失败原因，降级展示时仍保留卡片
+    category        VARCHAR(64),                       -- AI 分类枚举 slug
+    flags           JSONB        NOT NULL DEFAULT '{}'::jsonb,  -- {nsfw, ad, flame}
+    status          VARCHAR(32)  NOT NULL DEFAULT 'PENDING',
+    report_count    INT          NOT NULL DEFAULT 0,
+    archived_at     TIMESTAMPTZ,                       -- 失效时间，ARCHIVED 时写入
+    archived_reason VARCHAR(64),                       -- link_dead / manual / spam
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_shared_links_status_created ON shared_links(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_shared_links_category       ON shared_links(category) WHERE status = 'APPROVED';
+CREATE INDEX IF NOT EXISTS idx_shared_links_submitter      ON shared_links(submitter_id, created_at DESC);
+
+-- 举报表。同一人对同一条链接只能举报一次（组合唯一）。
+-- 3 个独立举报自动下架逻辑由 Service 层维护 report_count。
+CREATE TABLE IF NOT EXISTS link_reports (
+    id          BIGSERIAL    PRIMARY KEY,
+    link_id     BIGINT       NOT NULL REFERENCES shared_links(id)  ON DELETE CASCADE,
+    reporter_id BIGINT       NOT NULL REFERENCES user_accounts(id) ON DELETE CASCADE,
+    reason      VARCHAR(64),
+    created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    UNIQUE (link_id, reporter_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_link_reports_link ON link_reports(link_id);
