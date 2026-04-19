@@ -173,6 +173,45 @@ public class JdbcSharedLinkRepository implements SharedLinkRepository {
         return n != null ? n : 0;
     }
 
+    @Override
+    public List<ProbeTarget> findApprovedForProbe(int limit) {
+        // 优先扫从没探测过的 (probe_last_at IS NULL)，其次是 probe_last_at 最早的，
+        // 配合任务跑的频率形成"轮询式"探活，不会总盯着同一批。
+        return jdbc.query(
+                "SELECT id, url, probe_fail_count FROM shared_links "
+                        + "WHERE status = ? "
+                        + "ORDER BY probe_last_at NULLS FIRST, id ASC LIMIT ?",
+                (rs, rowNum) -> new ProbeTarget(
+                        rs.getLong("id"),
+                        rs.getString("url"),
+                        rs.getInt("probe_fail_count")),
+                com.involutionhell.backend.community.model.SharedLinkStatus.APPROVED,
+                limit);
+    }
+
+    @Override
+    public int incrementProbeFail(Long id) {
+        Integer n = jdbc.queryForObject(
+                "UPDATE shared_links SET probe_fail_count = probe_fail_count + 1, "
+                        + "probe_last_at = NOW(), updated_at = NOW() "
+                        + "WHERE id = ? RETURNING probe_fail_count",
+                Integer.class, id);
+        return n != null ? n : 0;
+    }
+
+    @Override
+    public void resetProbeFail(Long id) {
+        jdbc.update(
+                "UPDATE shared_links SET probe_fail_count = 0, probe_last_at = NOW(), "
+                        + "updated_at = NOW() WHERE id = ?",
+                id);
+    }
+
+    @Override
+    public void touchProbeLastAt(Long id) {
+        jdbc.update("UPDATE shared_links SET probe_last_at = NOW() WHERE id = ?", id);
+    }
+
     private String serializeFlags(Map<String, Boolean> flags) {
         try {
             return objectMapper.writeValueAsString(flags == null ? new HashMap<>() : flags);

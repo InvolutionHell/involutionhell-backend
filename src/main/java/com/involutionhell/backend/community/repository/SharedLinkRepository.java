@@ -42,4 +42,19 @@ public interface SharedLinkRepository {
 
     /** 限频判定：某用户在 since 之后提交了几条。 */
     int countBySubmitterSince(Long submitterId, java.time.Instant since);
+
+    /** M9 失效探活：拉所有 APPROVED 的 (id, url)，用于 HEAD 探活。只拿需要的两列。 */
+    List<ProbeTarget> findApprovedForProbe(int limit);
+
+    /** 探活失败 +1，返回新值。达阈值（>=2）由 Job 层决定是否 ARCHIVED。 */
+    int incrementProbeFail(Long id);
+
+    /** 探活成功归零。 */
+    void resetProbeFail(Long id);
+
+    /** 探活后记录时间，避免频繁扫相同 link。 */
+    void touchProbeLastAt(Long id);
+
+    /** 探活扫描需要的最小字段集合。 */
+    record ProbeTarget(Long id, String url, int probeFailCount) {}
 }
