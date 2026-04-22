@@ -52,3 +52,23 @@ CREATE TABLE IF NOT EXISTS event_interests (
     FOREIGN KEY (event_id) REFERENCES events(id)        ON DELETE CASCADE,
     FOREIGN KEY (user_id)  REFERENCES user_accounts(id) ON DELETE CASCADE
 );
+
+-- docs / doc_paths：给 AnalyticsService 的 UNION 查询用。
+-- 这里只保留 analytics 关心的列；JSONB / TIMESTAMPTZ 等在 H2 里降级成 VARCHAR / TIMESTAMP。
+CREATE TABLE IF NOT EXISTS docs (
+    id               TEXT      PRIMARY KEY,
+    path_current     TEXT,
+    title            TEXT,
+    created_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    contributor_stats VARCHAR(4000) NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS doc_paths (
+    doc_id     TEXT      NOT NULL,
+    path       TEXT      NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (doc_id, path),
+    FOREIGN KEY (doc_id) REFERENCES docs(id) ON DELETE CASCADE
+);
