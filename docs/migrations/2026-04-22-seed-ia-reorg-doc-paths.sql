@@ -60,8 +60,10 @@ ranked_matches AS (
     JOIN ia_reorg_aliases a ON d.path_current LIKE a.new_prefix || '%'
     WHERE d.path_current IS NOT NULL
 )
-INSERT INTO doc_paths (doc_id, path)
-SELECT doc_id, old_path
+-- updated_at 在生产 schema 里是 NOT NULL 但没 DB-level default（Prisma @updatedAt
+-- 是应用层维护，原生 INSERT 不会填），这里显式写 now() 兜底。
+INSERT INTO doc_paths (doc_id, path, created_at, updated_at)
+SELECT doc_id, old_path, now(), now()
 FROM ranked_matches
 WHERE rn = 1
 ON CONFLICT (doc_id, path) DO NOTHING;
