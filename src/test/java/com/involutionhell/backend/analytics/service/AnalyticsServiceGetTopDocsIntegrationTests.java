@@ -102,7 +102,7 @@ class AnalyticsServiceGetTopDocsIntegrationTests {
     }
 
     @Test
-    void matchesHistoricalPathViaDocPaths() {
+    void historicalPathResolvesToCurrentCanonicalUrl() {
         // docs 表里存的是 IA 重组后的新路径
         insertDoc("qwenvl", "app/docs/learn/ai/multimodal/qwenvl/index.mdx", "QwenVL 多模态");
         // doc_paths 里留有 IA 重组前的老路径（seed SQL 或 backfill 写入）
@@ -116,9 +116,29 @@ class AnalyticsServiceGetTopDocsIntegrationTests {
         List<TopDocDto> result = analyticsService.getTopDocs("all", 20);
 
         assertThat(result).hasSize(1);
-        assertThat(result.get(0).path()).isEqualTo("/docs/ai/multimodal/qwenvl");
+        // 榜单对外暴露的是当前 canonical URL，避免前端点进去再走一次 301
+        assertThat(result.get(0).path()).isEqualTo("/docs/learn/ai/multimodal/qwenvl");
         assertThat(result.get(0).title()).isEqualTo("QwenVL 多模态");
         assertThat(result.get(0).views()).isEqualTo(1200L);
+    }
+
+    @Test
+    void mergesOldAndNewUrlIntoSingleCanonicalEntry() {
+        insertDoc("qwenvl", "app/docs/learn/ai/multimodal/qwenvl/index.mdx", "QwenVL 多模态");
+        insertDocPath("qwenvl", "app/docs/ai/multimodal/qwenvl/index.mdx");
+
+        // IA 重组的那段时间 GA4 同时积累了老 URL 和新 URL 的访问
+        when(ga4ReportService.fetchTopPaths(anyString(), anyInt())).thenReturn(List.of(
+                new Ga4ReportService.PathCount("/docs/ai/multimodal/qwenvl", 800),
+                new Ga4ReportService.PathCount("/docs/learn/ai/multimodal/qwenvl", 200)
+        ));
+
+        List<TopDocDto> result = analyticsService.getTopDocs("all", 20);
+
+        // 榜单里应只出现一条 canonical URL，views 合并
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).path()).isEqualTo("/docs/learn/ai/multimodal/qwenvl");
+        assertThat(result.get(0).views()).isEqualTo(1000L);
     }
 
     @Test

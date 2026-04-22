@@ -26,6 +26,9 @@ public class AnalyticsService {
         this.jdbcTemplate = jdbcTemplate;
     }
 
+    /** 一条 match_path 解析出来的当前标题 + 规范 URL，用 record 省一个内部类。 */
+    private record DocInfo(String canonicalPath, String title) {}
+
     @Cacheable(value = "topDocs", key = "#window + '_' + #limit")
     public List<TopDocDto> getTopDocs(String window, int limit) {
         // GA4 里一篇文章可能拆成 "?utm_source" / 带尾斜杠 / 有 anchor 等多条记录，
@@ -37,21 +40,33 @@ public class AnalyticsService {
             return List.of();
         }
 
-        Map<String, Long> mergedViews = new LinkedHashMap<>();
+        // GA4 原始 pagePath 按归一化后的 match key 累加 views
+        Map<String, Long> viewsByMatchPath = new LinkedHashMap<>();
         for (Ga4ReportService.PathCount pc : pathCounts) {
             String normalized = normalizePath(pc.path());
             if (normalized.isEmpty()) continue;
-            mergedViews.merge(normalized, pc.views(), Long::sum);
+            viewsByMatchPath.merge(normalized, pc.views(), Long::sum);
         }
 
-        List<String> paths = new ArrayList<>(mergedViews.keySet());
-        Map<String, String> pathToTitle = queryDocTitles(paths);
+        List<String> paths = new ArrayList<>(viewsByMatchPath.keySet());
+        Map<String, DocInfo> matchToDoc = queryDocInfo(paths);
 
-        return mergedViews.entrySet().stream()
-                .filter(e -> pathToTitle.containsKey(e.getKey()))
+        // 把 GA4 里的老 URL / 新 URL 全部归并到当前 canonical 路径上，
+        // 这样榜单点击直接 200，不需要再走一次 301 redirect，
+        // 搜索引擎爬榜单页时也能把权重直接传给当前规范 URL。
+        Map<String, Long> viewsByCanonical = new LinkedHashMap<>();
+        Map<String, String> titleByCanonical = new LinkedHashMap<>();
+        for (Map.Entry<String, Long> e : viewsByMatchPath.entrySet()) {
+            DocInfo info = matchToDoc.get(e.getKey());
+            if (info == null) continue;
+            viewsByCanonical.merge(info.canonicalPath(), e.getValue(), Long::sum);
+            titleByCanonical.putIfAbsent(info.canonicalPath(), info.title());
+        }
+
+        return viewsByCanonical.entrySet().stream()
                 .sorted(Map.Entry.<String, Long>comparingByValue().reversed()
                         .thenComparing(Map.Entry.comparingByKey()))
-                .map(e -> new TopDocDto(e.getKey(), pathToTitle.get(e.getKey()), e.getValue()))
+                .map(e -> new TopDocDto(e.getKey(), titleByCanonical.get(e.getKey()), e.getValue()))
                 .limit(limit)
                 .toList();
     }
@@ -59,7 +74,7 @@ public class AnalyticsService {
     /**
      * 归一化 GA4 pagePath：只做 query / anchor / 尾斜杠清洗，不再做任何 IA 路径重写。
      * 历史 IA（比如 2026-04-19 重组前的 /docs/ai/* / /docs/CommunityShare/*）要靠 DB
-     * 里的 doc_paths 行来命中，见 {@link #queryDocTitles}。
+     * 里的 doc_paths 行来命中，见 {@link #queryDocInfo}。
      * 对外暴露为 package-private 便于单元测试。
      */
     String normalizePath(String path) {
@@ -77,13 +92,13 @@ public class AnalyticsService {
     }
 
     /**
-     * 查询 docs 表，把 GA4 返回的 pagePath 批量映射成标题。
+     * 查询 docs / doc_paths，把 GA4 归一化后的 pagePath 映射到 <当前规范 URL, 标题>。
      *
      * <p>这里做的事：把 docs.path_current（当前文件路径）和 doc_paths.path（历史文件路径）
      * 一起纳入候选，用同一套 PostgreSQL 正则去掉 {@code ^app} 前缀与 {@code (/index)?\.(mdx|md)$}
-     * 后缀后与 GA4 的 pagePath 对齐。这样 2026-04-19 IA 重组之前的老 URL
-     * （比如 /docs/ai/multimodal/qwenvl）能通过 doc_paths 命中到当前 docs 行，
-     * 30D / ALL 窗口的历史流量不丢。
+     * 后缀后与 GA4 的 pagePath 对齐。每行无论从哪侧命中，都带上这一 doc 的 current 规范 URL
+     * （总是基于 docs.path_current 生成），上层用 canonical 做展示和排序 key，GA4 里的老
+     * 路径和新路径就能合并成同一条榜单记录。
      *
      * <p>前提：{@code doc_paths} 里要有对应的老路径。前端 scripts/backfill-contributors.mjs
      * 每次跑都会 upsert"当前文件"路径（只增不减），加上
@@ -97,40 +112,53 @@ public class AnalyticsService {
      * <p>查询失败直接抛 {@link IllegalStateException}，由全局异常处理器返回 500，
      * 不再返回空 Map 导致上层 containsKey 过滤把整个榜单静默清空。
      */
-    private Map<String, String> queryDocTitles(List<String> paths) {
+    private Map<String, DocInfo> queryDocInfo(List<String> paths) {
         if (paths.isEmpty()) return Map.of();
 
         try {
-            // UNION ALL：同一个 doc 既能被 path_current 命中、也能被 doc_paths 里任一历史
-            // 路径命中；多行会被下面 Collectors.toMap 的 merge 函数收敛成一条（保留任一 title）。
+            // UNION ALL：一行 = 一个 (match_path, canonical_path, title) 候选。
+            // - 从 docs 过来的：match 和 canonical 都是 path_current 归一化，指自己
+            // - 从 doc_paths 过来的：match 是历史路径归一化，canonical 仍然是 path_current
+            //   归一化（通过 JOIN docs 拿），所以老 URL 最终落到当前 URL 上
             String sql = """
-                    SELECT normalized AS path_current, title
+                    SELECT match_path, canonical_path, title
                     FROM (
-                        SELECT d.title,
+                        SELECT regexp_replace(
+                                   regexp_replace(d.path_current, '^app', ''),
+                                   '(/index)?\\.(mdx|md)$', ''
+                               ) AS match_path,
                                regexp_replace(
                                    regexp_replace(d.path_current, '^app', ''),
                                    '(/index)?\\.(mdx|md)$', ''
-                               ) AS normalized
+                               ) AS canonical_path,
+                               d.title
                         FROM docs d
                         WHERE d.path_current IS NOT NULL
                         UNION ALL
-                        SELECT d.title,
-                               regexp_replace(
+                        SELECT regexp_replace(
                                    regexp_replace(dp.path, '^app', ''),
                                    '(/index)?\\.(mdx|md)$', ''
-                               ) AS normalized
+                               ) AS match_path,
+                               regexp_replace(
+                                   regexp_replace(d.path_current, '^app', ''),
+                                   '(/index)?\\.(mdx|md)$', ''
+                               ) AS canonical_path,
+                               d.title
                         FROM doc_paths dp
                         JOIN docs d ON d.id = dp.doc_id
+                        WHERE d.path_current IS NOT NULL
                     ) t
-                    WHERE normalized = ANY(?)
+                    WHERE match_path = ANY(?)
                     """;
             List<Map<String, Object>> rows = jdbcTemplate.queryForList(
                     sql,
                     (Object) paths.toArray(new String[0])
             );
             return rows.stream().collect(Collectors.toMap(
-                    r -> (String) r.get("path_current"),
-                    r -> (String) r.get("title"),
+                    r -> (String) r.get("match_path"),
+                    r -> new DocInfo((String) r.get("canonical_path"), (String) r.get("title")),
+                    // 同一个 match_path 理论上只会出现一次（docs 当前路径 + doc_paths 历史
+                    // 路径不会撞）；万一撞了（脏数据），保留先到的那条
                     (a, b) -> a
             ));
         } catch (Exception e) {
