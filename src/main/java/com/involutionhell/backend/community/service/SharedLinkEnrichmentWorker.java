@@ -38,13 +38,16 @@ public class SharedLinkEnrichmentWorker {
     private final OgFetchService ogFetchService;
     private final ClassificationService classificationService;
     private final SharedLinkService sharedLinkService;
+    private final AlertWebhookClient alertWebhookClient;
 
     public SharedLinkEnrichmentWorker(OgFetchService ogFetchService,
                                       ClassificationService classificationService,
-                                      SharedLinkService sharedLinkService) {
+                                      SharedLinkService sharedLinkService,
+                                      AlertWebhookClient alertWebhookClient) {
         this.ogFetchService = ogFetchService;
         this.classificationService = classificationService;
         this.sharedLinkService = sharedLinkService;
+        this.alertWebhookClient = alertWebhookClient;
     }
 
     /**
@@ -137,6 +140,12 @@ public class SharedLinkEnrichmentWorker {
         );
 
         log.info("enrichment 完成: linkId={} status={} category={}", linkId, finalStatus, cls.category());
+
+        // FLAGGED 状态即时告警：不等每日 digest，让管理员立刻看到 nsfw/ad/flame
+        // 失败静默（webhook 挂了不能影响审核流转），所以写在 enrich 完成之后。
+        if (SharedLinkStatus.FLAGGED.equals(finalStatus)) {
+            sharedLinkService.findById(linkId).ifPresent(fresh -> alertWebhookClient.notifyFlagged(fresh, flags));
+        }
     }
 
     /**

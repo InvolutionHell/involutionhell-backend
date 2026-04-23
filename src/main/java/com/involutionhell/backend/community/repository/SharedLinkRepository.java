@@ -27,6 +27,12 @@ public interface SharedLinkRepository {
     /** 管理员待审：PENDING_MANUAL + FLAGGED。 */
     List<SharedLink> findPendingForAdmin();
 
+    /** 按 status 计数。用于审核摘要接口。 */
+    int countByStatus(String status);
+
+    /** 给定 status 在 since 之后的条数（审核摘要里统计"今日新增 APPROVED"等）。 */
+    int countByStatusSince(String status, java.time.Instant since);
+
     /** 更新 OG + 分类 + flags + status（异步 worker 跑完调）。 */
     void updateEnrichment(Long id,
                           String ogTitle, String ogDescription,

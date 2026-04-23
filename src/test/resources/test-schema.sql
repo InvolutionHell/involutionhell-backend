@@ -72,3 +72,46 @@ CREATE TABLE IF NOT EXISTS doc_paths (
     PRIMARY KEY (doc_id, path),
     FOREIGN KEY (doc_id) REFERENCES docs(id) ON DELETE CASCADE
 );
+
+-- ─── 社区分享（shared_links）测试 schema ──────────────────────────────────
+-- 与生产 schema.sql 对齐，JSONB → VARCHAR，TIMESTAMPTZ → TIMESTAMP 降级
+CREATE TABLE IF NOT EXISTS shared_links (
+    id               BIGSERIAL    PRIMARY KEY,
+    submitter_id     BIGINT       NOT NULL,
+    url              TEXT         NOT NULL,
+    url_hash         VARCHAR(64)  NOT NULL UNIQUE,
+    host             VARCHAR(255) NOT NULL,
+    recommendation   TEXT,
+    og_title         TEXT,
+    og_description   TEXT,
+    og_cover         TEXT,
+    og_site_name     VARCHAR(255),
+    og_fetch_error   TEXT,
+    category         VARCHAR(64),
+    flags            VARCHAR(1000) NOT NULL DEFAULT '{}',
+    status           VARCHAR(32)  NOT NULL DEFAULT 'PENDING',
+    report_count     INT          NOT NULL DEFAULT 0,
+    archived_at      TIMESTAMP,
+    archived_reason  VARCHAR(64),
+    admin_note       TEXT,
+    probe_fail_count INT          NOT NULL DEFAULT 0,
+    probe_last_at    TIMESTAMP,
+    created_at       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (submitter_id) REFERENCES user_accounts(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS link_reports (
+    id          BIGSERIAL    PRIMARY KEY,
+    link_id     BIGINT       NOT NULL,
+    reporter_id BIGINT       NOT NULL,
+    reason      VARCHAR(255),
+    created_at  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (link_id)     REFERENCES shared_links(id)    ON DELETE CASCADE,
+    FOREIGN KEY (reporter_id) REFERENCES user_accounts(id)   ON DELETE CASCADE
+);
+
+-- seed discord-bridge 与生产 schema.sql 保持一致
+MERGE INTO user_accounts (username, password_hash, display_name, enabled, roles, permissions)
+    KEY (username)
+    VALUES ('discord-bridge', '!', 'Discord Bridge', FALSE, 'bridge', '');
