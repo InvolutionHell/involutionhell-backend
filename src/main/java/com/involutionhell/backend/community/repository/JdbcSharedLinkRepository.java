@@ -130,6 +130,22 @@ public class JdbcSharedLinkRepository implements SharedLinkRepository {
     }
 
     @Override
+    public int countByStatus(String status) {
+        Integer c = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM shared_links WHERE status = ?",
+                Integer.class, status);
+        return c == null ? 0 : c;
+    }
+
+    @Override
+    public int countByStatusSince(String status, Instant since) {
+        Integer c = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM shared_links WHERE status = ? AND created_at >= ?",
+                Integer.class, status, Timestamp.from(since));
+        return c == null ? 0 : c;
+    }
+
+    @Override
     public void updateEnrichment(Long id,
                                  String ogTitle, String ogDescription,
                                  String ogCover, String ogSiteName, String ogFetchError,

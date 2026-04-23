@@ -41,6 +41,10 @@ public class SaTokenConfigure implements WebMvcConfigurer {
                 // POST 提交 / 举报 / GET /mine 走方法级 @SaCheckLogin 校验。
                 // /api/admin/community/** 不放行，走 @SaCheckRole("admin") 校验。
                 .notMatch("/api/community/links")
+                // 机器人桥接渠道（Discord ChatBot 等）：走 X-Internal-Key header 认证，
+                // 不要求 sa-token 登录态。Controller 自己校验密钥。
+                // 用 /** 覆盖子路径（/internal 提交 + /internal/summary 查询）。
+                .notMatch("/api/community/links/internal", "/api/community/links/internal/**")
                 .notMatch("/api/chat/sessions/save")       // AI 对话持久化（匿名 / 登录都写，登录时自动关联 userId）
                 .check(r -> StpUtil.checkLogin());         // 未登录抛出 NotLoginException
         })).addPathPatterns("/**");
