@@ -41,6 +41,9 @@ class SharedLinkEnrichmentWorkerTests {
     @Mock
     private SharedLinkService sharedLinkService;
 
+    @Mock
+    private AlertWebhookClient alertWebhookClient;
+
     @InjectMocks
     private SharedLinkEnrichmentWorker worker;
 

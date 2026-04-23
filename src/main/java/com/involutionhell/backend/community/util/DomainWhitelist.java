@@ -28,7 +28,15 @@ public final class DomainWhitelist {
             "juejin.cn",
             "www.36kr.com",
             "36kr.com",
-            "sspai.com"
+            "sspai.com",
+
+            // 学术 / 开源社区：AI/CS 方向的正式论文与代码（用户画像契合）
+            // arxiv 是 pre-print 官方仓库，不会托管色情/赌博；个别争议论文仍由
+            // AI 的 nsfw/ad/flame flag 兜底。github/huggingface 同理，整体信任度够高。
+            "arxiv.org",
+            "www.arxiv.org",
+            "github.com",
+            "huggingface.co"
     );
 
     public static boolean contains(String host) {
