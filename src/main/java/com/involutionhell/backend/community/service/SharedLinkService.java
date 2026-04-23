@@ -9,6 +9,7 @@ import com.involutionhell.backend.community.repository.SharedLinkRepository;
 import com.involutionhell.backend.community.util.UrlNormalizer;
 import com.involutionhell.backend.usercenter.model.UserAccount;
 import com.involutionhell.backend.usercenter.repository.UserAccountRepository;
+import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -51,6 +52,13 @@ public class SharedLinkService {
     private final UserAccountRepository userRepo;
 
     /**
+     * 缓存 discord-bridge 账号 id，避免每次 submitInternal 都查一次库。
+     * 懒加载 + volatile 双检：启动时 DB 可能还没 ready（SPRING_SQL_INIT_MODE=always
+     * 会先跑 schema.sql seed），@PostConstruct 里一次性 lookup 最稳。
+     */
+    private volatile Long bridgeId;
+
+    /**
      * 用 @Lazy 打破循环依赖：Worker → Service → Worker。
      * Worker 在 submit() 成功后被调用，@Lazy 确保 Spring 容器初始化顺序无冲突。
      */
@@ -68,6 +76,25 @@ public class SharedLinkService {
     @Lazy
     public void setEnrichmentWorker(SharedLinkEnrichmentWorker enrichmentWorker) {
         this.enrichmentWorker = enrichmentWorker;
+    }
+
+    /**
+     * 启动时一次性解析 bridge 账号 id。
+     * 首次 seed 未落库（bootstrap 顺序问题）时只打 warn、不抛，让 Spring 正常起；
+     * 真正的 submitInternal 调用会再查一次兜底。
+     */
+    @PostConstruct
+    void resolveBridgeId() {
+        userRepo.findByUsername(BRIDGE_USERNAME)
+                .map(UserAccount::id)
+                .ifPresentOrElse(
+                        id -> {
+                            this.bridgeId = id;
+                            log.info("discord-bridge id resolved: {}", id);
+                        },
+                        () -> log.warn(
+                                "discord-bridge 账号未找到（首次部署 seed 可能稍晚到达），"
+                                        + "submitInternal 首次调用会延迟解析"));
     }
 
     /**
@@ -141,10 +168,15 @@ public class SharedLinkService {
     public SharedLink submitInternal(String submitterLabel, String rawUrl, String recommendation) {
         UrlNormalizer.Normalized norm = UrlNormalizer.normalize(rawUrl);
 
-        Long bridgeId = userRepo.findByUsername(BRIDGE_USERNAME)
-                .map(UserAccount::id)
-                .orElseThrow(() -> new IllegalStateException(
-                        "discord-bridge 账号不存在，检查 schema.sql 是否已执行 seed"));
+        Long resolvedBridgeId = bridgeId;
+        if (resolvedBridgeId == null) {
+            // @PostConstruct 启动时没解析到（seed 还没跑），这里最后兜底再查一次
+            resolvedBridgeId = userRepo.findByUsername(BRIDGE_USERNAME)
+                    .map(UserAccount::id)
+                    .orElseThrow(() -> new IllegalStateException(
+                            "discord-bridge 账号不存在，检查 schema.sql 是否已执行 seed"));
+            this.bridgeId = resolvedBridgeId;
+        }
 
         String urlHash = UrlNormalizer.sha256Hex(norm.canonicalUrl());
 
@@ -159,7 +191,7 @@ public class SharedLinkService {
 
         SharedLink draft = new SharedLink(
                 null,
-                bridgeId,
+                resolvedBridgeId,
                 norm.canonicalUrl(),
                 urlHash,
                 norm.host(),

@@ -28,12 +28,23 @@ VALUES ('admin',   'ad89b64d66caa8e30e5d5ce4a9763f4ecc205814c412175f3e2c50027471
 ON CONFLICT (username) DO NOTHING;
 
 -- Discord 桥接系统账号（不可登录）。
--- password_hash 故意塞无法匹配的占位符（'!' 不是 sha256 的合法十六进制），确保即使
--- 有人知道 username 也无法走 /auth/login 通过口令登录；该账号仅被 SharedLinkService.submitInternal
--- 取 submitter_id 用，真实提交人名放在 recommendation 里（"来自 Discord @xxx"）。
+-- 双重禁用：
+--   1. password_hash='!' —— 非 sha256 合法十六进制，口令校验永远失败
+--   2. enabled=FALSE     —— 未来若有人重置密码 / 误改口令，enabled 仍挡住登录
+-- 该账号仅被 SharedLinkService.submitInternal 取 submitter_id 用（FK 不 care enabled），
+-- 真实提交人名放在 recommendation 里（"来自 Discord @xxx"）。
+--
+-- 注意：这里用 DO UPDATE 而非 DO NOTHING，是因为老版本 seed 落过 enabled=TRUE，
+-- 每次启动 reconcile 回 FALSE，可阻断历史遗留记录再次被误启用。
+-- roles/permissions/password_hash 也一起回写，保证行的约束不会漂移。
 INSERT INTO user_accounts (username, password_hash, display_name, enabled, roles, permissions)
-VALUES ('discord-bridge', '!', 'Discord Bridge', TRUE, 'bridge', '')
-ON CONFLICT (username) DO NOTHING;
+VALUES ('discord-bridge', '!', 'Discord Bridge', FALSE, 'bridge', '')
+ON CONFLICT (username) DO UPDATE SET
+    password_hash = EXCLUDED.password_hash,
+    display_name  = EXCLUDED.display_name,
+    enabled       = EXCLUDED.enabled,
+    roles         = EXCLUDED.roles,
+    permissions   = EXCLUDED.permissions;
 
 -- 站点超管（superadmin）升级：
 -- 原先尝试按 GitHub handle 做 seed，但 AuthService.loginByGithub 创建的 username 是

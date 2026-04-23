@@ -21,6 +21,9 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+
 /**
  * 机器人桥接渠道的提交接口。
  *
@@ -49,21 +52,54 @@ public class SharedLinkInternalController {
         this.expectedKey = expectedKey;
     }
 
-    @PostMapping
-    public ResponseEntity<ApiResponse<SharedLinkView>> submit(
-            @RequestHeader(value = "X-Internal-Key", required = false) String providedKey,
-            @RequestBody InternalShareRequest req) {
-
-        // 未配置 key 时拒绝所有请求（防止开发环境忘设 key 就上线导致接口裸奔）
+    /**
+     * 统一校验 X-Internal-Key header。
+     *
+     * 返回：
+     *   - null：校验通过
+     *   - 非 null：直接 return 这个 response（503 未配置 / 403 缺失或错误）
+     *
+     * 密钥比较用 {@link MessageDigest#isEqual} 走常量时间，避免 timing side-channel
+     * 泄漏密钥前缀（即便 loopback 上威胁很低，代价为零就顺手做）。
+     */
+    private ResponseEntity<ApiResponse<Object>> checkKey(String providedKey) {
         if (expectedKey == null || expectedKey.isBlank()) {
             log.error("internal.api-key 未配置，拒绝请求");
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                     .body(new ApiResponse<>(false, "internal api not configured", null));
         }
-        if (providedKey == null || !expectedKey.equals(providedKey)) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN)
-                    .body(new ApiResponse<>(false, "invalid internal key", null));
+        if (providedKey == null) {
+            return forbidden();
         }
+        byte[] expected = expectedKey.getBytes(StandardCharsets.UTF_8);
+        byte[] provided = providedKey.getBytes(StandardCharsets.UTF_8);
+        if (!MessageDigest.isEqual(expected, provided)) {
+            return forbidden();
+        }
+        return null;
+    }
+
+    private static ResponseEntity<ApiResponse<Object>> forbidden() {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                .body(new ApiResponse<>(false, "invalid internal key", null));
+    }
+
+    /**
+     * 把 checkKey 的泛型返回转成任意业务 body 类型（无数据时 data=null）。
+     * 仅用在校验失败分支，不转 payload，只转空壳。
+     */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static <T> ResponseEntity<ApiResponse<T>> cast(ResponseEntity<ApiResponse<Object>> err) {
+        return (ResponseEntity) err;
+    }
+
+    @PostMapping
+    public ResponseEntity<ApiResponse<SharedLinkView>> submit(
+            @RequestHeader(value = "X-Internal-Key", required = false) String providedKey,
+            @RequestBody InternalShareRequest req) {
+
+        ResponseEntity<ApiResponse<Object>> authFail = checkKey(providedKey);
+        if (authFail != null) return cast(authFail);
 
         if (req == null || req.url() == null || req.url().trim().isEmpty()) {
             return ResponseEntity.badRequest()
@@ -100,14 +136,8 @@ public class SharedLinkInternalController {
             @RequestHeader(value = "X-Internal-Key", required = false) String providedKey,
             @RequestParam(value = "sampleLimit", defaultValue = "5") int sampleLimit) {
 
-        if (expectedKey == null || expectedKey.isBlank()) {
-            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
-                    .body(new ApiResponse<>(false, "internal api not configured", null));
-        }
-        if (providedKey == null || !expectedKey.equals(providedKey)) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN)
-                    .body(new ApiResponse<>(false, "invalid internal key", null));
-        }
+        ResponseEntity<ApiResponse<Object>> authFail = checkKey(providedKey);
+        if (authFail != null) return cast(authFail);
 
         int safeSample = Math.max(0, Math.min(sampleLimit, 20));
         AdminSummary s = service.buildAdminSummary(safeSample);
@@ -116,21 +146,19 @@ public class SharedLinkInternalController {
 
     /**
      * 按 id 拉取单条分享，供 Bot 轮询异步 enrichment 的最终状态。
-     * SharedLinkView 已经屏蔽了敏感字段（不含 submitter_id 明文等），可安全给 Bot 回显。
+     *
+     * 注意：当前直接复用 SharedLinkView，请以其实际字段定义为准——它包含
+     * submitterId。Bot 是可信组件（X-Internal-Key 鉴权 + 127.0.0.1 loopback），
+     * 暴露 submitter_id 可接受。若未来要对非可信消费方开放，请换成不含
+     * submitterId 的专用脱敏 DTO，不要假定这里自动屏蔽。
      */
     @GetMapping("/{id}")
     public ResponseEntity<ApiResponse<SharedLinkView>> getById(
             @RequestHeader(value = "X-Internal-Key", required = false) String providedKey,
             @PathVariable Long id) {
 
-        if (expectedKey == null || expectedKey.isBlank()) {
-            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
-                    .body(new ApiResponse<>(false, "internal api not configured", null));
-        }
-        if (providedKey == null || !expectedKey.equals(providedKey)) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN)
-                    .body(new ApiResponse<>(false, "invalid internal key", null));
-        }
+        ResponseEntity<ApiResponse<Object>> authFail = checkKey(providedKey);
+        if (authFail != null) return cast(authFail);
 
         return service.findById(id)
                 .map(link -> ResponseEntity.ok(ApiResponse.ok(SharedLinkView.from(link))))
