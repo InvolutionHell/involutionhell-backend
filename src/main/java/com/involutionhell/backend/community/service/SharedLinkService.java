@@ -16,6 +16,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -103,10 +104,18 @@ public class SharedLinkService {
     /**
      * 提交分享链接。
      *
+     * 事务覆盖「限频读 + 去重读 + insert」三步：限频计数和 insert 必须在同一
+     * 事务里（同隔离级别下），否则并发请求会穿透日配额。
+     *
+     * 末尾的 enrichmentWorker.enrich 是 @Async 分发：只是把 Runnable 扔进另
+     * 一条线程池，不在本事务线程上跑，故对事务边界无副作用。worker 内部已对
+     * findById 空返回做降级处理，覆盖「tx 还没 commit 就被 async 读到」的 race。
+     *
      * @throws IllegalArgumentException URL 非法
      * @throws DuplicateKeyException    url_hash 重复（同一 URL 已存在）
      * @throws RateLimitExceeded        当前用户 24h 内已达上限
      */
+    @Transactional
     public SharedLink submit(Long submitterId, String rawUrl, String recommendation) {
         UrlNormalizer.Normalized norm = UrlNormalizer.normalize(rawUrl);
 
@@ -168,6 +177,7 @@ public class SharedLinkService {
      * - 同样的状态机（PENDING → APPROVED/PENDING_MANUAL/FLAGGED）
      * - 同样的 DuplicateKeyException 语义
      */
+    @Transactional
     public SharedLink submitInternal(String submitterLabel, String rawUrl, String recommendation) {
         UrlNormalizer.Normalized norm = UrlNormalizer.normalize(rawUrl);
 
@@ -232,6 +242,7 @@ public class SharedLinkService {
         return prefix + "：" + original;
     }
 
+    @Transactional(readOnly = true)
     public Optional<SharedLink> findById(Long id) {
         return linkRepo.findById(id);
     }
@@ -241,6 +252,7 @@ public class SharedLinkService {
      *
      * @param sampleLimit PENDING_MANUAL 采样条数（展示最早 N 条），传 <=0 时不采样
      */
+    @Transactional(readOnly = true)
     public AdminSummary buildAdminSummary(int sampleLimit) {
         int pendingManual = linkRepo.countByStatus(SharedLinkStatus.PENDING_MANUAL);
         int flagged = linkRepo.countByStatus(SharedLinkStatus.FLAGGED);
@@ -259,14 +271,17 @@ public class SharedLinkService {
         return new AdminSummary(pendingManual, flagged, approvedLast24h, samples);
     }
 
+    @Transactional(readOnly = true)
     public List<SharedLink> listApproved(String category, int limit, int offset) {
         return linkRepo.findApproved(category, limit, offset);
     }
 
+    @Transactional(readOnly = true)
     public List<SharedLink> listBySubmitter(Long submitterId) {
         return linkRepo.findBySubmitter(submitterId);
     }
 
+    @Transactional(readOnly = true)
     public List<SharedLink> listPendingForAdmin() {
         return linkRepo.findPendingForAdmin();
     }
@@ -276,6 +291,7 @@ public class SharedLinkService {
      *
      * @return true = 此次举报触发了自动下架
      */
+    @Transactional
     public boolean report(Long linkId, Long reporterId, String reason) {
         LinkReport draft = new LinkReport(null, linkId, reporterId, reason, null);
         try {
@@ -301,6 +317,7 @@ public class SharedLinkService {
      * 异步 worker 回填 OG + 分类 + 安全判定。
      * M4 里调：提交后事件驱动或 @Async。
      */
+    @Transactional
     public void enrich(Long id,
                        String ogTitle, String ogDescription,
                        String ogCover, String ogSiteName, String ogFetchError,
