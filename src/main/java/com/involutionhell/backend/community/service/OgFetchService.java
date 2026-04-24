@@ -8,13 +8,17 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
-import java.net.URISyntaxException;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.Locale;
 import java.util.Optional;
 
 /**
@@ -51,6 +55,15 @@ public class OgFetchService {
 
     /** 最多允许 3 次 redirect；超过则按失败处理。 */
     static final int MAX_REDIRECTS = 3;
+
+    /**
+     * 响应体读取上限（2 MB）。OG meta 全在 {@code <head>} 里，2 MB 足够所有
+     * 正常站点；超上限按“疑似恶意无限流 / chunked 无尽”处理，立刻中断读取。
+     *
+     * 之所以要在应用层兜底限流：JDK {@code BodyHandlers.ofString()} 本身
+     * 没有 size 限制，配上 10 秒 timeout 仍然可能被攻击者的无限流撑爆堆。
+     */
+    static final int MAX_BODY_BYTES = 2 * 1024 * 1024;
 
     private final HttpClient httpClient;
 
@@ -110,11 +123,14 @@ public class OgFetchService {
                         .GET()
                         .build();
 
-                HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+                HttpResponse<InputStream> response =
+                        httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
                 int status = response.statusCode();
 
                 // 3xx 手动跳转（最多 MAX_REDIRECTS 次），每一跳都会在下一轮循环里再次校验 host
                 if (status >= 300 && status < 400) {
+                    // 3xx 的 body 我们不需要，读完就走，防止连接泄漏
+                    drainAndClose(response.body());
                     Optional<String> location = response.headers().firstValue("Location");
                     if (location.isEmpty() || location.get().isBlank()) {
                         log.warn("og-fetch 收到 3xx 但无 Location: url={} status={}", currentUrl, status);
@@ -131,12 +147,22 @@ public class OgFetchService {
                 }
 
                 if (status < 200 || status >= 300) {
+                    drainAndClose(response.body());
                     String reason = "HTTP " + status;
                     log.warn("og-fetch 失败（HTTP 非 2xx）: url={} status={}", currentUrl, status);
                     return OgFetchResult.failure(reason);
                 }
 
-                return parseOg(response.body(), currentUrl);
+                // 2xx：流式读取 body，边读边计数；命中 MAX_BODY_BYTES 立刻中断
+                Charset charset = resolveCharset(
+                        response.headers().firstValue("Content-Type").orElse(null));
+                BodyReadResult bodyResult = readBodyCapped(response.body(), charset);
+                if (bodyResult.exceededLimit) {
+                    log.warn("og-fetch 响应体超上限 {}B: url={}", MAX_BODY_BYTES, currentUrl);
+                    return OgFetchResult.failure("response body exceeded max size");
+                }
+
+                return parseOg(bodyResult.body, currentUrl);
             }
             // 理论上走不到：for 循环里所有分支都 return
             return OgFetchResult.failure("unreachable");
@@ -157,6 +183,84 @@ public class OgFetchService {
             return OgFetchResult.failure(reason);
         }
     }
+
+    /**
+     * 边读边计数的 body 读取：一次 read 最多 {@code MAX_BODY_BYTES} 字节；
+     * 超上限立刻 close 流并返回 {@code exceededLimit=true}，不把后续字节收进 buffer。
+     *
+     * 选择 {@link ByteArrayOutputStream} + 手动循环而不是 {@code readAllBytes}
+     * 是因为 readAllBytes 会在 close 前把整条流全吃进堆里，完全绕开我们的上限。
+     */
+    private static BodyReadResult readBodyCapped(InputStream in, Charset charset) throws IOException {
+        try (InputStream stream = in) {
+            ByteArrayOutputStream buf = new ByteArrayOutputStream(
+                    Math.min(64 * 1024, MAX_BODY_BYTES));
+            byte[] chunk = new byte[8 * 1024];
+            int total = 0;
+            int n;
+            while ((n = stream.read(chunk)) != -1) {
+                if (total + n > MAX_BODY_BYTES) {
+                    // 命中上限：只保留已读到上限的字节，丢弃超出部分，停止读取
+                    int remaining = MAX_BODY_BYTES - total;
+                    if (remaining > 0) {
+                        buf.write(chunk, 0, remaining);
+                    }
+                    return new BodyReadResult(buf.toString(charset), true);
+                }
+                buf.write(chunk, 0, n);
+                total += n;
+            }
+            return new BodyReadResult(buf.toString(charset), false);
+        }
+    }
+
+    /**
+     * 从 Content-Type 头提取 charset；缺失或无法识别时默认 UTF-8。
+     * 公众号 / 知乎都是 UTF-8，少数站点（旧站、GBK 站）需要读 header 里的 charset 参数。
+     */
+    static Charset resolveCharset(String contentType) {
+        if (contentType == null || contentType.isBlank()) {
+            return StandardCharsets.UTF_8;
+        }
+        String lower = contentType.toLowerCase(Locale.ROOT);
+        int idx = lower.indexOf("charset=");
+        if (idx < 0) {
+            return StandardCharsets.UTF_8;
+        }
+        String raw = contentType.substring(idx + "charset=".length()).trim();
+        // 去掉后续 ;/空格 以及两侧引号
+        int end = raw.length();
+        for (int i = 0; i < raw.length(); i++) {
+            char c = raw.charAt(i);
+            if (c == ';' || c == ' ' || c == '\t') { end = i; break; }
+        }
+        String name = raw.substring(0, end).replace("\"", "").replace("'", "").trim();
+        if (name.isEmpty()) {
+            return StandardCharsets.UTF_8;
+        }
+        try {
+            return Charset.forName(name);
+        } catch (Exception e) {
+            // 非法字符集名：按 UTF-8 兜底，不让整个抓取失败
+            return StandardCharsets.UTF_8;
+        }
+    }
+
+    /** 快速丢弃流并关闭，避免连接卡在 keep-alive 池里。最多丢 64 KB 就 break。 */
+    private static void drainAndClose(InputStream in) {
+        if (in == null) return;
+        try (InputStream stream = in) {
+            byte[] sink = new byte[8 * 1024];
+            int drained = 0;
+            while (drained < 64 * 1024 && stream.read(sink) != -1) {
+                drained += sink.length;
+            }
+        } catch (IOException ignored) {
+            // close / drain 失败忽略，主流程已决策返回 failure
+        }
+    }
+
+    private record BodyReadResult(String body, boolean exceededLimit) {}
 
     /**
      * 把 Location 头（可能是绝对 URL，也可能是相对路径）解析成绝对 URL。

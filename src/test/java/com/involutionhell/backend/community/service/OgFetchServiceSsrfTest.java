@@ -2,6 +2,7 @@ package com.involutionhell.backend.community.service;
 
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.net.Authenticator;
 import java.net.CookieHandler;
@@ -11,6 +12,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -105,6 +107,27 @@ class OgFetchServiceSsrfTest {
         assertThat(client.sentRequests).hasSize(1);
     }
 
+    @Test
+    void fetch_bodyExceedsMaxSize_returnsFailure() {
+        // 恶意公开 host 返回 > 2 MB 的 body —— 服务端必须边读边截断，
+        // 不能把无限流整个吃进堆
+        int oversize = OgFetchService.MAX_BODY_BYTES + 16 * 1024;
+        byte[] payload = new byte[oversize];
+        // 填可见字符避免读到全 0 被解析成空文档
+        for (int i = 0; i < oversize; i++) payload[i] = 'A';
+
+        ScriptedHttpClient client = new ScriptedHttpClient(List.of(
+                ScriptedResponse.okRaw(payload)
+        ));
+        OgFetchService service = new OgFetchService(client);
+
+        OgFetchResult result = service.fetch("https://example.com/huge");
+
+        assertThat(result.isSuccess()).isFalse();
+        assertThat(result.errorMessage()).isEqualTo("response body exceeded max size");
+        assertThat(client.sentRequests).hasSize(1);
+    }
+
     // ── 工具：可记录请求的 HttpClient ────────────────────────────────────────
 
     /** 始终抛 AssertionError 的 HttpClient — 用于确认请求未被发出。 */
@@ -163,7 +186,7 @@ class OgFetchServiceSsrfTest {
             if (resp == null) {
                 throw new AssertionError("ScriptedHttpClient 响应队列已空");
             }
-            return (HttpResponse<T>) new StubResponse<>(resp.status, resp.body, resp.location, request.uri());
+            return (HttpResponse<T>) new StubResponse<>(resp.status, resp.bodyBytes, resp.location, request.uri());
         }
 
         @Override
@@ -192,25 +215,33 @@ class OgFetchServiceSsrfTest {
         @Override public Optional<java.util.concurrent.Executor> executor() { return Optional.empty(); }
     }
 
-    private record ScriptedResponse(int status, String body, String location) {
-        static ScriptedResponse ok(String html) { return new ScriptedResponse(200, html, null); }
+    private record ScriptedResponse(int status, byte[] bodyBytes, String location) {
+        static ScriptedResponse ok(String html) {
+            return new ScriptedResponse(200, html.getBytes(StandardCharsets.UTF_8), null);
+        }
+        static ScriptedResponse okRaw(byte[] body) {
+            return new ScriptedResponse(200, body, null);
+        }
         static ScriptedResponse redirect(int code, String location) {
-            return new ScriptedResponse(code, "", location);
+            return new ScriptedResponse(code, new byte[0], location);
         }
     }
 
-    private record StubResponse<T>(int statusCode, String rawBody, String location, URI uri)
+    private record StubResponse<T>(int statusCode, byte[] rawBody, String location, URI uri)
             implements HttpResponse<T> {
 
         @Override
         @SuppressWarnings("unchecked")
-        public T body() { return (T) rawBody; }
+        public T body() {
+            // 改流式读取后，body() 必须返回 InputStream
+            return (T) new ByteArrayInputStream(rawBody);
+        }
 
         @Override public HttpRequest request() { return null; }
         @Override public Optional<HttpResponse<T>> previousResponse() { return Optional.empty(); }
         @Override public HttpHeaders headers() {
             Map<String, List<String>> map = (location == null)
-                    ? Map.of("content-type", List.of("text/html"))
+                    ? Map.of("content-type", List.of("text/html; charset=utf-8"))
                     : Map.of("content-type", List.of("text/html"), "location", List.of(location));
             return HttpHeaders.of(map, (k, v) -> true);
         }

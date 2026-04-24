@@ -241,20 +241,25 @@ class OgFetchServiceTests {
         @Override public Optional<java.util.concurrent.Executor> executor() { return Optional.empty(); }
     }
 
-    /** Stub HTTP 响应（String body）。 */
+    /**
+     * Stub HTTP 响应。OgFetchService 现在用 BodyHandlers.ofInputStream()，
+     * 所以 body() 要返回 ByteArrayInputStream；headers 也要塞 utf-8 charset
+     * 走 resolveCharset 的 happy path。
+     */
     private record StubResponse<T>(int statusCode, String rawBody) implements HttpResponse<T> {
 
         @Override
         @SuppressWarnings("unchecked")
         public T body() {
-            // OgFetchService 用的是 BodyHandlers.ofString()，类型是 String
-            return (T) rawBody;
+            return (T) new ByteArrayInputStream(rawBody.getBytes(StandardCharsets.UTF_8));
         }
 
         @Override public HttpRequest request() { return null; }
         @Override public Optional<HttpResponse<T>> previousResponse() { return Optional.empty(); }
         @Override public HttpHeaders headers() {
-            return HttpHeaders.of(Map.of("content-type", List.of("text/html")), (k, v) -> true);
+            return HttpHeaders.of(
+                    Map.of("content-type", List.of("text/html; charset=utf-8")),
+                    (k, v) -> true);
         }
         @Override public Optional<SSLSession> sslSession() { return Optional.empty(); }
         @Override public URI uri() { return URI.create("https://example.com"); }
