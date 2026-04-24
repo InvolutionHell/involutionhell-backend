@@ -119,7 +119,9 @@ public class SharedLinkService {
      * @throws DuplicateKeyException    url_hash 重复（同一 URL 已存在）
      * @throws RateLimitExceeded        当前用户 24h 内已达上限
      */
-    @Transactional
+    // rollbackFor = Exception.class：Spring 默认只在 unchecked 上回滚；
+    // 后续若有人加 checked 异常（比如 IOException）不至于悄悄提交半条数据
+    @Transactional(rollbackFor = Exception.class)
     public SharedLink submit(Long submitterId, String rawUrl, String recommendation) {
         UrlNormalizer.Normalized norm = UrlNormalizer.normalize(rawUrl);
 
@@ -181,7 +183,7 @@ public class SharedLinkService {
      * - 同样的状态机（PENDING → APPROVED/PENDING_MANUAL/FLAGGED）
      * - 同样的 DuplicateKeyException 语义
      */
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public SharedLink submitInternal(String submitterLabel, String rawUrl, String recommendation) {
         UrlNormalizer.Normalized norm = UrlNormalizer.normalize(rawUrl);
 
@@ -295,7 +297,7 @@ public class SharedLinkService {
      *
      * @return true = 此次举报触发了自动下架
      */
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public boolean report(Long linkId, Long reporterId, String reason) {
         LinkReport draft = new LinkReport(null, linkId, reporterId, reason, null);
         try {
@@ -321,7 +323,7 @@ public class SharedLinkService {
      * 异步 worker 回填 OG + 分类 + 安全判定。
      * M4 里调：提交后事件驱动或 @Async。
      */
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public void enrich(Long id,
                        String ogTitle, String ogDescription,
                        String ogCover, String ogSiteName, String ogFetchError,
