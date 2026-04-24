@@ -2,7 +2,6 @@ package com.involutionhell.backend.community.service;
 
 import com.involutionhell.backend.community.model.SharedLink;
 import com.involutionhell.backend.community.model.SharedLinkStatus;
-import com.involutionhell.backend.community.util.DomainWhitelist;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Async;
@@ -104,27 +103,26 @@ public class SharedLinkEnrichmentWorker {
         }
 
         // ── 步骤 3：决定最终 status ──────────────────────────────────────
+        // 简化策略（2026-04-24 起）：信任 AI 的"没命中 flag"判断，
+        // 直接 APPROVED 不再区分白名单 / 非白名单。DomainWhitelist 保留但
+        // 仅作为未来 fast-path（可跳过 AI 调用省 token），当前不参与状态决策。
         String finalStatus;
         if (cls.anyFlagSet()) {
             // 任一安全 flag 命中 → FLAGGED，进人工待审
             finalStatus = SharedLinkStatus.FLAGGED;
-            log.info("enrichment 标记 FLAGGED: linkId={} nsfw={} ad={} flame={}",
-                    linkId, cls.nsfw(), cls.ad(), cls.flame());
-        } else if (DomainWhitelist.contains(host)) {
-            // 白名单域名 + 无安全问题 → 直接 APPROVED
-            finalStatus = SharedLinkStatus.APPROVED;
-            log.info("enrichment 白名单 APPROVED: linkId={} host={}", linkId, host);
+            log.info("enrichment 标记 FLAGGED: linkId={} nsfw={} ad={} flame={} illegal={}",
+                    linkId, cls.nsfw(), cls.ad(), cls.flame(), cls.illegal());
         } else {
-            // 非白名单域名 → PENDING_MANUAL，等管理员人工审核
-            finalStatus = SharedLinkStatus.PENDING_MANUAL;
-            log.info("enrichment 非白名单 PENDING_MANUAL: linkId={} host={}", linkId, host);
+            finalStatus = SharedLinkStatus.APPROVED;
+            log.info("enrichment AI 放行 APPROVED: linkId={} host={}", linkId, host);
         }
 
         // ── 步骤 4：回填数据库 ───────────────────────────────────────────
         Map<String, Boolean> flags = Map.of(
-                "nsfw", cls.nsfw(),
-                "ad", cls.ad(),
-                "flame", cls.flame()
+                "nsfw",    cls.nsfw(),
+                "ad",      cls.ad(),
+                "flame",   cls.flame(),
+                "illegal", cls.illegal()
         );
 
         sharedLinkService.enrich(

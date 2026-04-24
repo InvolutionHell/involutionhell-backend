@@ -152,6 +152,42 @@ class ClassificationServiceTests {
         assertThat(result.anyFlagSet()).isFalse();
     }
 
+    // ── Provider content filter（1301）应该标 illegal，不能 fallback 全 false 放行 ──
+
+    @Test
+    void classify_providerContentFilter1301_returnsIllegalTrue() {
+        // 智谱 GLM 在检测到违法内容时不返回 choices，而是返回这种 error + contentFilter。
+        // 这是 security gap 防线：fallback 全 false 会让违法内容自动 APPROVED。
+        String glmRefusal = """
+                {"contentFilter":[{"level":2,"role":"user"}],
+                 "error":{"code":"1301","message":"系统检测到输入或生成内容可能包含不安全或敏感内容"}}
+                """;
+        ClassificationService service = new ClassificationService(
+                stubHttpClient(200, glmRefusal), objectMapper, PROPS);
+
+        ClassificationResult result = service.classify(
+                "澳门线上赌场推荐", "新用户送 888 彩金", "example.com");
+
+        assertThat(result.illegal()).isTrue();
+        assertThat(result.anyFlagSet()).isTrue();
+        assertThat(result.category()).isEqualTo(LinkCategory.OTHER);
+    }
+
+    @Test
+    void classify_providerGenericError_returnsFallbackNotIllegal() {
+        // 其它错误（限流、鉴权失败等）不是内容问题，应该走普通 fallback 不误标 illegal。
+        String rateLimited = """
+                {"error":{"code":"429","message":"rate limit exceeded"}}
+                """;
+        ClassificationService service = new ClassificationService(
+                stubHttpClient(200, rateLimited), objectMapper, PROPS);
+
+        ClassificationResult result = service.classify("标题", "描述", "example.com");
+
+        assertThat(result.illegal()).isFalse();
+        assertThat(result.anyFlagSet()).isFalse();
+    }
+
     // ── null 输入不崩溃 ───────────────────────────────────────────────────
 
     @Test

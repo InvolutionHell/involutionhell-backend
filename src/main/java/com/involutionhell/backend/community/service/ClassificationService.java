@@ -48,17 +48,18 @@ public class ClassificationService {
      * 强约束：只返回 JSON，不带任何 markdown 代码块或解释。
      */
     private static final String SYSTEM_PROMPT = """
-            你是一个内容分类 AI。根据输入信息，将链接分到以下分类之一：
+            你是一个面向中国大陆互联网社群（involutionhell.com）的内容审核 AI。
+            运营地在中国，必须遵守《网络安全法》《网络信息内容生态治理规定》等
+            中国大陆现行法律法规。根据输入信息，把链接分到以下分类之一：
             %s
 
-            同时判断内容是否存在安全问题。判定采用"宁松勿严"策略——社群用户的正常
-            分享（技术公告 / 产品更新 / 研究进展等）即使带一点营销语气也应放行，
-            只有明显的纯商业推广才应标 ad。
+            同时判断内容是否存在 4 类安全问题。对 nsfw/ad/flame 采用"宁松勿严"
+            策略（社群正常技术分享放行）；对 illegal 必须严格，宁可误报。
 
-            - nsfw: 色情、裸露、暴力血腥、猎奇不适内容。仅当内容**明确**涉及时为 true
-            - ad:   **仅**标注"纯推销且无实质内容价值"的页面，命中要求同时满足：
+            - nsfw: 色情、裸露、血腥暴力、猎奇不适。仅当**明确**涉及时为 true。
+            - ad:   **仅**标注"纯推销且无实质内容价值"的页面，要求同时满足：
                     (a) 主体是商品 / 课程 / 服务 / 会员的购买引导，且
-                    (b) 几乎没有独立技术 / 知识 / 新闻价值
+                    (b) 几乎没有独立技术 / 知识 / 新闻价值。
                     典型例子：带"立即购买 / 限时优惠 / 扫码报名"的纯卖课软文、
                     电商商品页、付费社群 / 会员订阅落地页。
                     **反例（全部 false）**：产品发布公告、版本更新说明（哪怕
@@ -66,9 +67,20 @@ public class ClassificationService {
                     新闻报道、个人作品集。
             - flame: 明显引战 / 人身攻击 / 极端言论 / 刻意煽动对立。技术路线之争、
                     理性观点分歧**不算**。
+            - illegal: 疑似违反中国大陆法律法规的内容。任一命中即 true：
+                    · 反对宪法基本原则、颠覆国家政权、煽动分裂国家、破坏国家统一
+                    · 攻击党和政府、宣扬港独 / 台独 / 藏独 / 疆独
+                    · 煽动民族歧视 / 民族仇恨、破坏民族团结
+                    · 宣扬邪教、封建迷信（法轮功等）
+                    · 散布谣言、扰乱社会秩序、破坏社会稳定
+                    · 宣扬 / 教唆赌博 / 毒品 / 淫秽色情 / 暴力恐怖
+                    · 泄露国家秘密、危害国家安全或利益
+                    · 翻墙工具 / VPN 售卖 / 违禁品交易
+                    · 明显违反《网络安全法》《治安管理处罚法》《刑法》其他情形
+                    技术讨论涉及敏感话题但论点中立且学术讨论 **不算** illegal。
 
             严格只返回 JSON，不要任何解释、代码块标记（不要 ```json）或其他文字：
-            {"category": "<slug>", "nsfw": false, "ad": false, "flame": false}
+            {"category": "<slug>", "nsfw": false, "ad": false, "flame": false, "illegal": false}
             """;
 
     private final HttpClient httpClient;
@@ -191,6 +203,31 @@ public class ClassificationService {
             // 使用 readValue(byte[], type) 避免 readTree(String) 的 deprecation 警告
             JsonNode root = objectMapper.readValue(
                     responseBody.getBytes(StandardCharsets.UTF_8), JsonNode.class);
+
+            // 上游 provider content filter 触发（智谱：error.code=1301 / contentFilter 非空）。
+            // 这种拒绝本身是强信号：说明 provider 自己都觉得内容敏感。直接打 illegal=true
+            // 走 FLAGGED，不要 fallback 成全 false 放行——那样是 security gap。
+            JsonNode errorNode = root.path("error");
+            boolean hasContentFilterFlag = root.has("contentFilter")
+                    && !root.path("contentFilter").isEmpty()
+                    && !root.path("contentFilter").isNull();
+            if (!errorNode.isMissingNode() && !errorNode.isNull()) {
+                String code = errorNode.path("code").asText("");
+                String message = errorNode.path("message").asText("");
+                if ("1301".equals(code) || hasContentFilterFlag) {
+                    log.warn("classification 被 provider content filter 拦截，标 illegal: host={} code={} msg={}",
+                            host, code, message);
+                    return ClassificationResult.blockedByContentFilter();
+                }
+                // 其它 error（限流 / 配置错误 / 网络等）走普通 fallback
+                log.warn("classification 上游返回 error: host={} code={} msg={}", host, code, message);
+                return ClassificationResult.fallback();
+            }
+            if (hasContentFilterFlag) {
+                log.warn("classification 被 content filter 拦截（无 error 字段）: host={}", host);
+                return ClassificationResult.blockedByContentFilter();
+            }
+
             // choices[0].message.content
             String content = root.path("choices").path(0)
                     .path("message").path("content").asText();
@@ -209,9 +246,12 @@ public class ClassificationService {
             JsonNode result = objectMapper.readValue(
                     content.getBytes(StandardCharsets.UTF_8), JsonNode.class);
             String rawCategory = result.path("category").asText("other");
-            boolean nsfw  = result.path("nsfw").asBoolean(false);
-            boolean ad    = result.path("ad").asBoolean(false);
-            boolean flame = result.path("flame").asBoolean(false);
+            boolean nsfw    = result.path("nsfw").asBoolean(false);
+            boolean ad      = result.path("ad").asBoolean(false);
+            boolean flame   = result.path("flame").asBoolean(false);
+            // 旧模型可能不返回 illegal 字段，缺失时按 false 降级（不阻拦），
+            // 命中 nsfw/ad/flame 任一时已经会走 FLAGGED
+            boolean illegal = result.path("illegal").asBoolean(false);
 
             // normalize 兜底：非法 slug 转 other
             String category = LinkCategory.normalize(rawCategory);
@@ -219,9 +259,9 @@ public class ClassificationService {
                 log.warn("classification 返回非法分类，降级为 other: host={} raw={}", host, rawCategory);
             }
 
-            log.debug("classification 完成: host={} category={} nsfw={} ad={} flame={}",
-                    host, category, nsfw, ad, flame);
-            return new ClassificationResult(category, nsfw, ad, flame);
+            log.debug("classification 完成: host={} category={} nsfw={} ad={} flame={} illegal={}",
+                    host, category, nsfw, ad, flame, illegal);
+            return new ClassificationResult(category, nsfw, ad, flame, illegal);
 
         } catch (Exception e) {
             log.warn("classification 响应解析失败，降级: host={} error={}", host, e.getMessage());
