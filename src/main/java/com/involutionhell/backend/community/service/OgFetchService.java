@@ -239,12 +239,16 @@ public class OgFetchService {
         if (contentType == null || contentType.isBlank()) {
             return StandardCharsets.UTF_8;
         }
+        // 一律在 lower 上定位并切片：原串上 "Charset=GBK" 这种大写写法时，
+        // 如果在 lower 上找 idx、再回原串 substring，虽然 ASCII 长度守恒能碰巧
+        // 对上，但以后哪怕有人把 lower 换成 toLowerCase(某 locale) 或加 trim，
+        // 都会错位。靠 ASCII 长度巧合的代码不要留。
         String lower = contentType.toLowerCase(Locale.ROOT);
         int idx = lower.indexOf("charset=");
         if (idx < 0) {
             return StandardCharsets.UTF_8;
         }
-        String raw = contentType.substring(idx + "charset=".length()).trim();
+        String raw = lower.substring(idx + "charset=".length()).trim();
         // 去掉后续 ;/空格 以及两侧引号
         int end = raw.length();
         for (int i = 0; i < raw.length(); i++) {
@@ -256,6 +260,7 @@ public class OgFetchService {
             return StandardCharsets.UTF_8;
         }
         try {
+            // Charset.forName 对 gbk / utf-8 / shift_jis 等都是大小写不敏感
             return Charset.forName(name);
         } catch (Exception e) {
             // 非法字符集名：按 UTF-8 兜底，不让整个抓取失败
