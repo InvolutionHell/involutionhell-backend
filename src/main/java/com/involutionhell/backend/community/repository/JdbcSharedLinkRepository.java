@@ -139,8 +139,11 @@ public class JdbcSharedLinkRepository implements SharedLinkRepository {
 
     @Override
     public int countByStatusSince(String status, Instant since) {
+        // 用 updated_at 而非 created_at：语义是"最近 since 之后状态变为 status 的"。
+        // enrichment / admin approve 都会 touch updated_at，所以能把"提交很早但最近
+        // 才通过"的链接也正确计入，更符合 digest 摘要的直觉。
         Integer c = jdbc.queryForObject(
-                "SELECT COUNT(*) FROM shared_links WHERE status = ? AND created_at >= ?",
+                "SELECT COUNT(*) FROM shared_links WHERE status = ? AND updated_at >= ?",
                 Integer.class, status, Timestamp.from(since));
         return c == null ? 0 : c;
     }

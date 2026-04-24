@@ -23,7 +23,7 @@ import static org.mockito.Mockito.*;
  *
  * 用 Mockito 模拟三个协作服务，验证：
  * 1. 白名单 + 无 flag → APPROVED
- * 2. 非白名单 + 无 flag → PENDING_MANUAL
+ * 2. 非白名单 + 无 flag → APPROVED（简化后信任 AI 无 flag 即放行）
  * 3. 任一 flag 命中 → FLAGGED
  * 4. OG 抓取失败（降级）后仍能正常完成 enrichment
  * 5. DeepSeek 分类失败（降级）后仍能推进 status
@@ -66,6 +66,22 @@ class SharedLinkEnrichmentWorkerTests {
     // ── 场景 1：白名单域名 + 无 flag → APPROVED ───────────────────────────
 
     @Test
+    void enrich_nonFlagged_doesNotFireWebhook() {
+        // APPROVED 路径不该触发告警 webhook，防未来改 enrichment 时误拓宽 alert
+        String host = "example.com";
+        SharedLink link = stubLink(100L, "https://example.com/x", host);
+        when(sharedLinkService.findById(100L)).thenReturn(Optional.of(link));
+        when(ogFetchService.fetch(anyString())).thenReturn(
+                new OgFetchResult("标题", null, null, null, null));
+        when(classificationService.classify(any(), any(), any())).thenReturn(
+                new ClassificationResult("other", false, false, false, false));
+
+        worker.enrich(100L);
+
+        verify(alertWebhookClient, never()).notifyFlagged(any(SharedLink.class), anyMap());
+    }
+
+    @Test
     void enrich_whitelistDomain_noFlags_statusBecomesApproved() {
         String host = "mp.weixin.qq.com"; // 白名单域名
         assertThat(DomainWhitelist.contains(host)).isTrue(); // 确保测试前提成立
@@ -75,7 +91,7 @@ class SharedLinkEnrichmentWorkerTests {
         when(ogFetchService.fetch(anyString())).thenReturn(
                 new OgFetchResult("标题", "描述", "https://cover.jpg", "某公众号", null));
         when(classificationService.classify(anyString(), anyString(), anyString())).thenReturn(
-                new ClassificationResult("engineering", false, false, false));
+                new ClassificationResult("engineering", false, false, false, false));
 
         worker.enrich(1L);
 
@@ -87,10 +103,10 @@ class SharedLinkEnrichmentWorkerTests {
         assertThat(statusCaptor.getValue()).isEqualTo(SharedLinkStatus.APPROVED);
     }
 
-    // ── 场景 2：非白名单域名 + 无 flag → PENDING_MANUAL ──────────────────
+    // ── 场景 2：非白名单域名 + 无 flag → APPROVED（2026-04-24 简化后） ──────────────────
 
     @Test
-    void enrich_nonWhitelistDomain_noFlags_statusBecomesPendingManual() {
+    void enrich_nonWhitelistDomain_noFlags_statusBecomesApproved_afterSimplification() {
         String host = "example.com"; // 非白名单
         assertThat(DomainWhitelist.contains(host)).isFalse();
 
@@ -99,7 +115,7 @@ class SharedLinkEnrichmentWorkerTests {
         when(ogFetchService.fetch(anyString())).thenReturn(
                 new OgFetchResult("非白名单文章", null, null, null, null));
         when(classificationService.classify(any(), any(), any())).thenReturn(
-                new ClassificationResult("other", false, false, false));
+                new ClassificationResult("other", false, false, false, false));
 
         worker.enrich(2L);
 
@@ -107,7 +123,7 @@ class SharedLinkEnrichmentWorkerTests {
         verify(sharedLinkService).enrich(eq(2L),
                 any(), any(), any(), any(), any(),
                 any(), anyMap(), statusCaptor.capture());
-        assertThat(statusCaptor.getValue()).isEqualTo(SharedLinkStatus.PENDING_MANUAL);
+        assertThat(statusCaptor.getValue()).isEqualTo(SharedLinkStatus.APPROVED);
     }
 
     // ── 场景 3：任一 flag 命中 → FLAGGED（忽略白名单）────────────────────
@@ -120,7 +136,7 @@ class SharedLinkEnrichmentWorkerTests {
         when(ogFetchService.fetch(anyString())).thenReturn(
                 new OgFetchResult("限时特卖！", "买一送一", null, null, null));
         when(classificationService.classify(any(), any(), any())).thenReturn(
-                new ClassificationResult("other", false, true, false)); // ad=true
+                new ClassificationResult("other", false, true, false, false)); // ad=true
 
         worker.enrich(3L);
 
@@ -129,6 +145,8 @@ class SharedLinkEnrichmentWorkerTests {
                 any(), any(), any(), any(), any(),
                 any(), anyMap(), statusCaptor.capture());
         assertThat(statusCaptor.getValue()).isEqualTo(SharedLinkStatus.FLAGGED);
+        // FLAGGED 必须触发 webhook（用于即时告警，防止未来重构时悄悄丢失）
+        verify(alertWebhookClient, times(1)).notifyFlagged(any(SharedLink.class), anyMap());
     }
 
     @Test
@@ -138,7 +156,7 @@ class SharedLinkEnrichmentWorkerTests {
         when(ogFetchService.fetch(anyString())).thenReturn(
                 new OgFetchResult("问题标题", null, null, null, null));
         when(classificationService.classify(any(), any(), any())).thenReturn(
-                new ClassificationResult("lifestyle", true, false, false)); // nsfw=true
+                new ClassificationResult("lifestyle", true, false, false, false)); // nsfw=true
 
         worker.enrich(4L);
 
@@ -160,7 +178,7 @@ class SharedLinkEnrichmentWorkerTests {
         when(ogFetchService.fetch(anyString())).thenReturn(
                 OgFetchResult.failure("HTTP 403"));
         when(classificationService.classify(isNull(), isNull(), eq(host))).thenReturn(
-                new ClassificationResult("other", false, false, false));
+                new ClassificationResult("other", false, false, false, false));
 
         worker.enrich(5L);
 
@@ -186,12 +204,12 @@ class SharedLinkEnrichmentWorkerTests {
 
         worker.enrich(6L);
 
-        // 分类降级：category=other, flags 全 false，非白名单 → PENDING_MANUAL
+        // 分类降级：category=other, flags 全 false → APPROVED（AI 说无问题就放行）
         ArgumentCaptor<String> statusCaptor = ArgumentCaptor.forClass(String.class);
         verify(sharedLinkService).enrich(eq(6L),
                 any(), any(), any(), any(), any(),
                 eq("other"), anyMap(), statusCaptor.capture());
-        assertThat(statusCaptor.getValue()).isEqualTo(SharedLinkStatus.PENDING_MANUAL);
+        assertThat(statusCaptor.getValue()).isEqualTo(SharedLinkStatus.APPROVED);
     }
 
     // ── 场景 6：链接不存在 → 跳过，不调 enrich ───────────────────────────
@@ -218,7 +236,7 @@ class SharedLinkEnrichmentWorkerTests {
         when(ogFetchService.fetch(anyString())).thenReturn(
                 new OgFetchResult("引战标题", null, null, null, null));
         when(classificationService.classify(any(), any(), any())).thenReturn(
-                new ClassificationResult("industry", false, false, true)); // flame=true
+                new ClassificationResult("industry", false, false, true, false)); // flame=true
 
         worker.enrich(7L);
 
