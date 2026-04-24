@@ -108,6 +108,23 @@ class OgFetchServiceSsrfTest {
     }
 
     @Test
+    void fetch_redirectWithGarbageLocation_returnsStructuredFailure() {
+        // 畸形 Location（带空格 + 非法字符）让 URI.resolve 抛 IllegalArgumentException；
+        // 我们必须把它转成结构化 failure("redirect target invalid: ...")，而不是
+        // 从外层 catch(Exception) 里漏出成通用 "解析异常"
+        ScriptedHttpClient client = new ScriptedHttpClient(List.of(
+                ScriptedResponse.redirect(302, "ht!tp://bad host /x y")
+        ));
+        OgFetchService service = new OgFetchService(client);
+
+        OgFetchResult result = service.fetch("https://example.com/og");
+
+        assertThat(result.isSuccess()).isFalse();
+        assertThat(result.errorMessage()).startsWith("redirect target invalid");
+        assertThat(client.sentRequests).hasSize(1);
+    }
+
+    @Test
     void fetch_bodyExceedsMaxSize_returnsFailure() {
         // 恶意公开 host 返回 > 2 MB 的 body —— 服务端必须边读边截断，
         // 不能把无限流整个吃进堆

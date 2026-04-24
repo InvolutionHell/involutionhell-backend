@@ -140,7 +140,16 @@ public class OgFetchService {
                         log.warn("og-fetch redirect 超过上限 {}: url={}", MAX_REDIRECTS, url);
                         return OgFetchResult.failure("too many redirects");
                     }
-                    String next = resolveRedirect(uri, location.get());
+                    String next;
+                    try {
+                        next = resolveRedirect(uri, location.get());
+                    } catch (IllegalArgumentException e) {
+                        // 畸形 Location（带空格 / 非法字符 / 协议残缺）：不要让异常
+                        // 漏到外层 catch(Exception) 里伪装成 "解析异常"，给一条结构化 msg
+                        log.warn("og-fetch redirect Location 非法: url={} location={} error={}",
+                                currentUrl, location.get(), e.getMessage());
+                        return OgFetchResult.failure("redirect target invalid: " + e.getMessage());
+                    }
                     log.debug("og-fetch redirect hop#{}: {} -> {}", hop + 1, currentUrl, next);
                     currentUrl = next;
                     continue;
@@ -264,15 +273,11 @@ public class OgFetchService {
 
     /**
      * 把 Location 头（可能是绝对 URL，也可能是相对路径）解析成绝对 URL。
+     * 畸形 Location 让 {@link URI#resolve(String)} 抛 {@link IllegalArgumentException}，
+     * 由调用方转成结构化 failure —— 本方法刻意不吞。
      */
     private static String resolveRedirect(URI base, String location) {
-        try {
-            URI resolved = base.resolve(location);
-            return resolved.toString();
-        } catch (IllegalArgumentException e) {
-            // URI.resolve 对畸形 Location 抛，交给上层按失败处理
-            throw e;
-        }
+        return base.resolve(location).toString();
     }
 
     /**
