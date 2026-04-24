@@ -65,7 +65,17 @@ public class OgFetchService {
     /** 抓取时声明的 User-Agent，模拟通用浏览器机器人。 */
     static final String USER_AGENT = "Mozilla/5.0 (compatible; InvolutionHellBot/1.0)";
 
-    /** 单次请求超时（connect + read 合计），10 秒足够公众号/知乎。 */
+    /**
+     * 单次请求超时，10 秒足够公众号/知乎把 response head + OG meta 所在的
+     * {@code <head>} 段发回来。
+     *
+     * <p>注意语义：改用 {@link HttpResponse.BodyHandlers#ofInputStream()} 之后，
+     * 这里的 timeout 只覆盖 connect + TLS 握手 + 收到 response head（以及 JDK
+     * 内部把响应对象返回给调用方之前的行为），并不限制随后从 InputStream
+     * 逐块 read 的耗时。所以不是老版那种“connect + read 合计 10s 上限”。
+     * 对无限流 / 慢发字节的防御是 {@link #MAX_BODY_BYTES} 尺寸上限 +
+     * {@link #readBodyCapped} 的主动中断，而不是这里的 timeout。
+     */
     static final Duration TIMEOUT = Duration.ofSeconds(10);
 
     /** 最多允许 3 次 redirect；超过则按失败处理。 */
