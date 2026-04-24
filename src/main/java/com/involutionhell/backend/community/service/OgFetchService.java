@@ -1,5 +1,6 @@
 package com.involutionhell.backend.community.service;
 
+import com.involutionhell.backend.community.util.PrivateAddressGuard;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
@@ -9,10 +10,12 @@ import org.springframework.stereotype.Service;
 
 import java.io.IOException;
 import java.net.URI;
+import java.net.URISyntaxException;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.Optional;
 
 /**
  * Open Graph 元数据抓取服务（M2）。
@@ -24,6 +27,14 @@ import java.time.Duration;
  *
  * User-Agent 设成 Mozilla/5.0 兼容抓取机器人，避免被目标站点简单拦截。
  * 超时 10 秒，微信/知乎的 OG 标签在 HTML head 里，一般 2-5s 可拿到。
+ *
+ * SSRF 防御：
+ * - 每一跳（初次请求 + 每次 redirect）都用 {@link PrivateAddressGuard} 把 host
+ *   解析成 IP 再逐 IP 过滤；命中内网 / loopback / link-local / CGNAT / multicast
+ *   就拒绝（fail-closed，DNS 解析失败也拒绝）。
+ * - 用 {@code Redirect.NEVER}，禁用 HttpClient 自己跟随；自己读 Location
+ *   手动跳转（最多 3 跳），否则 JDK 默认会直接把我们扔到一个 169.254.169.254
+ *   的 metadata endpoint 上。
  *
  * 注意：本服务只抓 OG meta，不缓存、不转存正文（规避盗链）。
  */
@@ -38,13 +49,17 @@ public class OgFetchService {
     /** 单次请求超时（connect + read 合计），10 秒足够公众号/知乎。 */
     static final Duration TIMEOUT = Duration.ofSeconds(10);
 
+    /** 最多允许 3 次 redirect；超过则按失败处理。 */
+    static final int MAX_REDIRECTS = 3;
+
     private final HttpClient httpClient;
 
     public OgFetchService() {
         // 自建 HttpClient，避免占用 openai 模块的 Bean；超时策略独立管理
+        // followRedirects 改成 NEVER，redirect 由本类手动处理并在每一跳复查 host
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(TIMEOUT)
-                .followRedirects(HttpClient.Redirect.NORMAL) // 跟随 301/302（公众号有跳转）
+                .followRedirects(HttpClient.Redirect.NEVER)
                 .build();
     }
 
@@ -62,22 +77,69 @@ public class OgFetchService {
     public OgFetchResult fetch(String url) {
         log.debug("og-fetch 开始: url={}", url);
         try {
-            HttpRequest request = HttpRequest.newBuilder(URI.create(url))
-                    .header("User-Agent", USER_AGENT)
-                    .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-                    .timeout(TIMEOUT)
-                    .GET()
-                    .build();
+            String currentUrl = url;
+            for (int hop = 0; hop <= MAX_REDIRECTS; hop++) {
+                // 每一跳都要重新校验 host —— 防止 302 把我们扔到内网
+                URI uri;
+                try {
+                    uri = URI.create(currentUrl);
+                } catch (IllegalArgumentException e) {
+                    log.warn("og-fetch URL 非法: url={} error={}", currentUrl, e.getMessage());
+                    return OgFetchResult.failure("invalid url: " + e.getMessage());
+                }
 
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+                String scheme = uri.getScheme();
+                if (scheme == null || !(scheme.equalsIgnoreCase("http") || scheme.equalsIgnoreCase("https"))) {
+                    return OgFetchResult.failure("only http/https allowed, got: " + scheme);
+                }
 
-            if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                String reason = "HTTP " + response.statusCode();
-                log.warn("og-fetch 失败（HTTP 非 2xx）: url={} status={}", url, response.statusCode());
-                return OgFetchResult.failure(reason);
+                String host = uri.getHost();
+                if (host == null || host.isBlank()) {
+                    return OgFetchResult.failure("url has no host");
+                }
+
+                if (PrivateAddressGuard.isBlockedHost(host)) {
+                    log.warn("og-fetch 拒绝内网/回环 host: url={} host={}", currentUrl, host);
+                    return OgFetchResult.failure("blocked internal host");
+                }
+
+                HttpRequest request = HttpRequest.newBuilder(uri)
+                        .header("User-Agent", USER_AGENT)
+                        .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                        .timeout(TIMEOUT)
+                        .GET()
+                        .build();
+
+                HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+                int status = response.statusCode();
+
+                // 3xx 手动跳转（最多 MAX_REDIRECTS 次），每一跳都会在下一轮循环里再次校验 host
+                if (status >= 300 && status < 400) {
+                    Optional<String> location = response.headers().firstValue("Location");
+                    if (location.isEmpty() || location.get().isBlank()) {
+                        log.warn("og-fetch 收到 3xx 但无 Location: url={} status={}", currentUrl, status);
+                        return OgFetchResult.failure("HTTP " + status + " without Location");
+                    }
+                    if (hop == MAX_REDIRECTS) {
+                        log.warn("og-fetch redirect 超过上限 {}: url={}", MAX_REDIRECTS, url);
+                        return OgFetchResult.failure("too many redirects");
+                    }
+                    String next = resolveRedirect(uri, location.get());
+                    log.debug("og-fetch redirect hop#{}: {} -> {}", hop + 1, currentUrl, next);
+                    currentUrl = next;
+                    continue;
+                }
+
+                if (status < 200 || status >= 300) {
+                    String reason = "HTTP " + status;
+                    log.warn("og-fetch 失败（HTTP 非 2xx）: url={} status={}", currentUrl, status);
+                    return OgFetchResult.failure(reason);
+                }
+
+                return parseOg(response.body(), currentUrl);
             }
-
-            return parseOg(response.body(), url);
+            // 理论上走不到：for 循环里所有分支都 return
+            return OgFetchResult.failure("unreachable");
 
         } catch (IOException | InterruptedException e) {
             // IOException 包含超时、DNS 解析失败、连接拒绝等
@@ -93,6 +155,19 @@ public class OgFetchService {
             String reason = "解析异常: " + e.getMessage();
             log.warn("og-fetch 解析异常: url={} error={}", url, reason);
             return OgFetchResult.failure(reason);
+        }
+    }
+
+    /**
+     * 把 Location 头（可能是绝对 URL，也可能是相对路径）解析成绝对 URL。
+     */
+    private static String resolveRedirect(URI base, String location) {
+        try {
+            URI resolved = base.resolve(location);
+            return resolved.toString();
+        } catch (IllegalArgumentException e) {
+            // URI.resolve 对畸形 Location 抛，交给上层按失败处理
+            throw e;
         }
     }
 
