@@ -41,6 +41,14 @@ import java.util.Optional;
  *   的 metadata endpoint 上。
  *
  * 注意：本服务只抓 OG meta，不缓存、不转存正文（规避盗链）。
+ *
+ * <h3>已知限制 — DNS rebinding 残留窗口</h3>
+ * {@link PrivateAddressGuard#isBlockedHost(String)} 用
+ * {@code InetAddress.getAllByName} 做一次 IP 判定，但 JDK {@code HttpClient}
+ * 在建连接时会独立再解析一次 DNS；低 TTL（TTL=0）的攻击者域可以在两次解析
+ * 之间把 A 记录从公网 IP 翻到 169.254.169.254。要彻底堵这一层需要换成
+ * Apache HttpClient 5 或 OkHttp，注入自定义 {@code DnsResolver} 复用同一
+ * 次解析结果，pin 到 guard 刚验过的 IP 上。属于后续工程化项，不在本 PR 范围。
  */
 @Service
 public class OgFetchService {
