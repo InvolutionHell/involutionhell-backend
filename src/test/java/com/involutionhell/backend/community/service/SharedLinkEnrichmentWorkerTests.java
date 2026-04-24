@@ -66,6 +66,22 @@ class SharedLinkEnrichmentWorkerTests {
     // ── 场景 1：白名单域名 + 无 flag → APPROVED ───────────────────────────
 
     @Test
+    void enrich_nonFlagged_doesNotFireWebhook() {
+        // APPROVED 路径不该触发告警 webhook，防未来改 enrichment 时误拓宽 alert
+        String host = "example.com";
+        SharedLink link = stubLink(100L, "https://example.com/x", host);
+        when(sharedLinkService.findById(100L)).thenReturn(Optional.of(link));
+        when(ogFetchService.fetch(anyString())).thenReturn(
+                new OgFetchResult("标题", null, null, null, null));
+        when(classificationService.classify(any(), any(), any())).thenReturn(
+                new ClassificationResult("other", false, false, false, false));
+
+        worker.enrich(100L);
+
+        verify(alertWebhookClient, never()).notifyFlagged(any(SharedLink.class), anyMap());
+    }
+
+    @Test
     void enrich_whitelistDomain_noFlags_statusBecomesApproved() {
         String host = "mp.weixin.qq.com"; // 白名单域名
         assertThat(DomainWhitelist.contains(host)).isTrue(); // 确保测试前提成立
@@ -129,6 +145,8 @@ class SharedLinkEnrichmentWorkerTests {
                 any(), any(), any(), any(), any(),
                 any(), anyMap(), statusCaptor.capture());
         assertThat(statusCaptor.getValue()).isEqualTo(SharedLinkStatus.FLAGGED);
+        // FLAGGED 必须触发 webhook（用于即时告警，防止未来重构时悄悄丢失）
+        verify(alertWebhookClient, times(1)).notifyFlagged(any(SharedLink.class), anyMap());
     }
 
     @Test

@@ -53,8 +53,11 @@ public class SharedLinkService {
 
     /**
      * 缓存 discord-bridge 账号 id，避免每次 submitInternal 都查一次库。
-     * 懒加载 + volatile 双检：启动时 DB 可能还没 ready（SPRING_SQL_INIT_MODE=always
-     * 会先跑 schema.sql seed），@PostConstruct 里一次性 lookup 最稳。
+     * 仅用 volatile 做可见性保证（不是双检锁——没有 synchronized / AtomicReference
+     * 的原子 compare-and-set）。之所以不强依赖启动期一次性初始化，是因为启动时
+     * DB 可能还没 ready（SPRING_SQL_INIT_MODE=always 会先跑 schema.sql seed），
+     * @PostConstruct 里一次性 lookup 最稳；若 seed 来得更晚，submitInternal 里
+     * 做兜底查询。并发竞争时最差只是多查一次 DB（幂等），不会写坏。
      */
     private volatile Long bridgeId;
 
