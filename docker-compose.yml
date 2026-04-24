@@ -52,6 +52,10 @@ services:
       start_period: 20s
     networks:
       - InvolutionHell-net
+    # 让容器内可用 host.docker.internal 访问宿主机（ChatBot 的 alert webhook
+    # 绑在宿主机 0.0.0.0:6200）。Linux Docker 不自带这个别名，必须显式声明。
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy
