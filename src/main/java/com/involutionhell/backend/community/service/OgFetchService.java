@@ -49,6 +49,13 @@ import java.util.Optional;
  * 之间把 A 记录从公网 IP 翻到 169.254.169.254。要彻底堵这一层需要换成
  * Apache HttpClient 5 或 OkHttp，注入自定义 {@code DnsResolver} 复用同一
  * 次解析结果，pin 到 guard 刚验过的 IP 上。属于后续工程化项，不在本 PR 范围。
+ *
+ * 补一点：即便换成 HC5 / OkHttp + 自定义 DnsResolver，也要把解析到的 IP
+ * 直接交给 socket connect（而不是把 hostname 再传给连接器让它重解析）；
+ * 同时 OS 层 nscd/systemd-resolved 缓存 + JVM {@code networkaddress.cache.ttl}
+ * 都可能保留毫秒级残窗口。真正的彻底修复必须是“guard 拿到 IP → 直接用该
+ * IP 建 socket + Host 头带原域名走 SNI”，靠 hostname 一路穿到底的实现都
+ * 只是缩小窗口、不是关闭窗口。
  */
 @Service
 public class OgFetchService {
