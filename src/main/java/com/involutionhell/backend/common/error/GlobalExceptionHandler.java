@@ -110,7 +110,8 @@ public class GlobalExceptionHandler {
      */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiResponse<Void>> handleUnexpected(Exception exception) {
-        exception.printStackTrace(); // 建议在开发阶段打印堆栈，生产环境应使用日志框架
+        // 走 SLF4J 统一进日志管道（含 trace id / 采集到 Loki 等），不再用 printStackTrace 污染 stdout
+        log.error("未处理的异常", exception);
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(ApiResponse.fail("服务器内部错误"));
     }
