@@ -269,8 +269,12 @@ public class OgFetchService {
         try (InputStream stream = in) {
             byte[] sink = new byte[8 * 1024];
             int drained = 0;
-            while (drained < 64 * 1024 && stream.read(sink) != -1) {
-                drained += sink.length;
+            int n;
+            // 必须捕获 read 的实际返回值 n；原来直接 += sink.length 在流尾 / 短读场景
+            // 下会高估已丢弃字节数，代码在骗读者。功能方向无害（只会更早 break），
+            // 但计数撒谎，改掉。
+            while (drained < 64 * 1024 && (n = stream.read(sink)) != -1) {
+                drained += n;
             }
         } catch (IOException ignored) {
             // close / drain 失败忽略，主流程已决策返回 failure
