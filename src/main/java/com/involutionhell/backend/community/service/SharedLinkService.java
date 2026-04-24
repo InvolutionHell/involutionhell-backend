@@ -8,7 +8,7 @@ import com.involutionhell.backend.community.repository.LinkReportRepository;
 import com.involutionhell.backend.community.repository.SharedLinkRepository;
 import com.involutionhell.backend.community.util.UrlNormalizer;
 import com.involutionhell.backend.usercenter.model.UserAccount;
-import com.involutionhell.backend.usercenter.repository.UserAccountRepository;
+import com.involutionhell.backend.usercenter.service.UserCenterService;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -50,7 +50,11 @@ public class SharedLinkService {
 
     private final SharedLinkRepository linkRepo;
     private final LinkReportRepository reportRepo;
-    private final UserAccountRepository userRepo;
+    /**
+     * 用 UserCenterService facade 而不是直接注入 UserAccountRepository：
+     * community 模块不应该直接摸 usercenter 的仓储层，跨模块访问只经过 service。
+     */
+    private final UserCenterService userCenterService;
 
     /**
      * 缓存 discord-bridge 账号 id，避免每次 submitInternal 都查一次库。
@@ -70,10 +74,10 @@ public class SharedLinkService {
 
     public SharedLinkService(SharedLinkRepository linkRepo,
                              LinkReportRepository reportRepo,
-                             UserAccountRepository userRepo) {
+                             UserCenterService userCenterService) {
         this.linkRepo = linkRepo;
         this.reportRepo = reportRepo;
-        this.userRepo = userRepo;
+        this.userCenterService = userCenterService;
     }
 
     @Autowired
@@ -89,7 +93,7 @@ public class SharedLinkService {
      */
     @PostConstruct
     void resolveBridgeId() {
-        userRepo.findByUsername(BRIDGE_USERNAME)
+        userCenterService.findByUsername(BRIDGE_USERNAME)
                 .map(UserAccount::id)
                 .ifPresentOrElse(
                         id -> {
@@ -184,7 +188,7 @@ public class SharedLinkService {
         Long resolvedBridgeId = bridgeId;
         if (resolvedBridgeId == null) {
             // @PostConstruct 启动时没解析到（seed 还没跑），这里最后兜底再查一次
-            resolvedBridgeId = userRepo.findByUsername(BRIDGE_USERNAME)
+            resolvedBridgeId = userCenterService.findByUsername(BRIDGE_USERNAME)
                     .map(UserAccount::id)
                     .orElseThrow(() -> new IllegalStateException(
                             "discord-bridge 账号不存在，检查 schema.sql 是否已执行 seed"));
