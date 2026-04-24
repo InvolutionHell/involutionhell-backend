@@ -1,4 +1,4 @@
-package com.involutionhell.backend.community.util;
+package com.involutionhell.backend.common.security;
 
 import java.net.Inet4Address;
 import java.net.Inet6Address;

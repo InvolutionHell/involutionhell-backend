@@ -1,6 +1,6 @@
 package com.involutionhell.backend.community.service;
 
-import com.involutionhell.backend.community.util.PrivateAddressGuard;
+import com.involutionhell.backend.common.security.PrivateAddressGuard;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
