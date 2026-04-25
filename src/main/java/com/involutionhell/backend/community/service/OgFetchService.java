@@ -136,9 +136,21 @@ public class OgFetchService {
                     return OgFetchResult.failure("url has no host");
                 }
 
-                if (PrivateAddressGuard.isBlockedHost(host)) {
-                    log.warn("og-fetch 拒绝内网/回环 host: url={} host={}", currentUrl, host);
-                    return OgFetchResult.failure("blocked internal host");
+                // 区分 DNS_FAIL 和 BLOCKED：之前都返回 "blocked internal host"，
+                // 用户敲错域名时排障误以为我们在审查他的链接
+                PrivateAddressGuard.CheckResult check = PrivateAddressGuard.resolveAndCheck(host);
+                switch (check) {
+                    case DNS_FAIL -> {
+                        log.warn("og-fetch DNS 解析失败: url={} host={}", currentUrl, host);
+                        return OgFetchResult.failure("dns lookup failed: " + host);
+                    }
+                    case BLOCKED -> {
+                        log.warn("og-fetch 拒绝内网/回环 host: url={} host={}", currentUrl, host);
+                        return OgFetchResult.failure("blocked internal host");
+                    }
+                    case OK -> {
+                        // continue
+                    }
                 }
 
                 HttpRequest request = HttpRequest.newBuilder(uri)
