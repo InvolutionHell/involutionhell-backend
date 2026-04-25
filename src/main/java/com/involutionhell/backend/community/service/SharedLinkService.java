@@ -108,16 +108,35 @@ public class SharedLinkService {
     /**
      * 提交分享链接。
      *
-     * 事务覆盖「限频读 + 去重读 + insert」三步：限频计数和 insert 必须在同一
-     * 事务里（同隔离级别下），否则并发请求会穿透日配额。
+     * <h3>事务边界</h3>
+     * {@code @Transactional} 把「限频 count + 去重 select + insert」三步包成
+     * 同一个 tx，给单次请求内部一致的快照视图（同 tx 里看到的 count 和后续
+     * insert 是同一份数据，不会出现 count 完一行被别人删掉的诡异现象）。
      *
-     * 末尾的 enrichmentWorker.enrich 是 @Async 分发：只是把 Runnable 扔进另
-     * 一条线程池，不在本事务线程上跑，故对事务边界无副作用。worker 内部已对
+     * 末尾的 enrichmentWorker.enrich 是 @Async 分发：只把 Runnable 扔进另一
+     * 条线程池，不在本事务线程上跑，故对事务边界无副作用。worker 内部已对
      * findById 空返回做降级处理，覆盖「tx 还没 commit 就被 async 读到」的 race。
+     *
+     * <h3>已知限制 — 限频不是原子的</h3>
+     * 上面那段 SELECT COUNT(*) + INSERT 是经典的 check-then-act：在 PostgreSQL
+     * 默认的 Read Committed 隔离级别下，两个并发请求可能都 SELECT 到 count = N
+     * 然后都 INSERT，结果当日落库 N+2 条而不是 N+1，{@link #DAILY_SUBMIT_LIMIT}
+     * 配额会被穿透。@Transactional 不解决这条路径的并发竞态——它给的是
+     * 一致性快照，不是原子限频。
+     *
+     * 真正的原子限频要走以下方式之一（属于 follow-up，不在本 PR 范围）：
+     * <ul>
+     *   <li>DB UNIQUE 约束 {@code (submitter_id, bucket_day)} + 计数表 upsert，
+     *       让数据库在主键冲突上替你做并发互斥</li>
+     *   <li>单次 {@code SELECT COUNT(*) ... FOR UPDATE} 持行锁直到 INSERT 完成</li>
+     *   <li>外部限流（Redis INCR + EXPIRE / 网关 rate-limit）</li>
+     * </ul>
+     * 已记入 PR description 的 "Known follow-ups" 段。
      *
      * @throws IllegalArgumentException URL 非法
      * @throws DuplicateKeyException    url_hash 重复（同一 URL 已存在）
-     * @throws RateLimitExceeded        当前用户 24h 内已达上限
+     * @throws RateLimitExceeded        当前用户 24h 内已达上限（best-effort，
+     *                                  并发场景下可能短暂穿透，见上方"已知限制"）
      */
     // rollbackFor = Exception.class：Spring 默认只在 unchecked 上回滚；
     // 后续若有人加 checked 异常（比如 IOException）不至于悄悄提交半条数据
