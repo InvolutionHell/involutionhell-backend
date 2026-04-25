@@ -69,12 +69,13 @@ class OgFetchServiceSsrfTest {
     void fetch_redirectToLinkLocalMetadata_blockedOnSecondHop() {
         // 公开 host 第一跳 200 是异常情况；我们用 302 → 169.254.169.254（AWS/GCP
         // metadata endpoint，link-local）。第二跳应在 PrivateAddressGuard 阶段被挡。
+        // 用 1.1.1.1（Cloudflare DNS）这种公网 IP 字面量做第一跳，避免依赖外部 DNS。
         ScriptedHttpClient client = new ScriptedHttpClient(List.of(
                 ScriptedResponse.redirect(302, "http://169.254.169.254/latest/meta-data/")
         ));
         OgFetchService service = new OgFetchService(client);
 
-        OgFetchResult result = service.fetch("https://example.com/og-test");
+        OgFetchResult result = service.fetch("https://1.1.1.1/og-test");
 
         assertThat(result.isSuccess()).isFalse();
         assertThat(result.errorMessage()).isEqualTo("blocked internal host");
@@ -97,7 +98,8 @@ class OgFetchServiceSsrfTest {
         ));
         OgFetchService service = new OgFetchService(client);
 
-        OgFetchResult result = service.fetch("https://example.com/og-article");
+        // 公网 IP 字面量：guard 不走 DNS，测试可在离线 / 受限 CI 里跑
+        OgFetchResult result = service.fetch("https://1.1.1.1/og-article");
 
         assertThat(result.isSuccess()).isTrue();
         assertThat(result.ogTitle()).isEqualTo("公共站点 OK");
@@ -117,7 +119,7 @@ class OgFetchServiceSsrfTest {
         ));
         OgFetchService service = new OgFetchService(client);
 
-        OgFetchResult result = service.fetch("https://example.com/og");
+        OgFetchResult result = service.fetch("https://1.1.1.1/og");
 
         assertThat(result.isSuccess()).isFalse();
         assertThat(result.errorMessage()).startsWith("redirect target invalid");
@@ -138,7 +140,7 @@ class OgFetchServiceSsrfTest {
         ));
         OgFetchService service = new OgFetchService(client);
 
-        OgFetchResult result = service.fetch("https://example.com/huge");
+        OgFetchResult result = service.fetch("https://1.1.1.1/huge");
 
         assertThat(result.isSuccess()).isFalse();
         assertThat(result.errorMessage()).isEqualTo("response body exceeded max size");
