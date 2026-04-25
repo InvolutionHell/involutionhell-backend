@@ -74,7 +74,7 @@ class SharedLinkEnrichmentWorkerTests {
         when(ogFetchService.fetch(anyString())).thenReturn(
                 new OgFetchResult("标题", null, null, null, null));
         when(classificationService.classify(any(), any(), any())).thenReturn(
-                new ClassificationResult("other", false, false, false, false));
+                new ClassificationResult("other", false, false, false, false, false));
 
         worker.enrich(100L);
 
@@ -91,7 +91,7 @@ class SharedLinkEnrichmentWorkerTests {
         when(ogFetchService.fetch(anyString())).thenReturn(
                 new OgFetchResult("标题", "描述", "https://cover.jpg", "某公众号", null));
         when(classificationService.classify(anyString(), anyString(), anyString())).thenReturn(
-                new ClassificationResult("engineering", false, false, false, false));
+                new ClassificationResult("engineering", false, false, false, false, false));
 
         worker.enrich(1L);
 
@@ -115,7 +115,7 @@ class SharedLinkEnrichmentWorkerTests {
         when(ogFetchService.fetch(anyString())).thenReturn(
                 new OgFetchResult("非白名单文章", null, null, null, null));
         when(classificationService.classify(any(), any(), any())).thenReturn(
-                new ClassificationResult("other", false, false, false, false));
+                new ClassificationResult("other", false, false, false, false, false));
 
         worker.enrich(2L);
 
@@ -136,7 +136,7 @@ class SharedLinkEnrichmentWorkerTests {
         when(ogFetchService.fetch(anyString())).thenReturn(
                 new OgFetchResult("限时特卖！", "买一送一", null, null, null));
         when(classificationService.classify(any(), any(), any())).thenReturn(
-                new ClassificationResult("other", false, true, false, false)); // ad=true
+                new ClassificationResult("other", false, true, false, false, false)); // ad=true
 
         worker.enrich(3L);
 
@@ -156,7 +156,7 @@ class SharedLinkEnrichmentWorkerTests {
         when(ogFetchService.fetch(anyString())).thenReturn(
                 new OgFetchResult("问题标题", null, null, null, null));
         when(classificationService.classify(any(), any(), any())).thenReturn(
-                new ClassificationResult("lifestyle", true, false, false, false)); // nsfw=true
+                new ClassificationResult("lifestyle", true, false, false, false, false)); // nsfw=true
 
         worker.enrich(4L);
 
@@ -178,7 +178,7 @@ class SharedLinkEnrichmentWorkerTests {
         when(ogFetchService.fetch(anyString())).thenReturn(
                 OgFetchResult.failure("HTTP 403"));
         when(classificationService.classify(isNull(), isNull(), eq(host))).thenReturn(
-                new ClassificationResult("other", false, false, false, false));
+                new ClassificationResult("other", false, false, false, false, false));
 
         worker.enrich(5L);
 
@@ -236,7 +236,7 @@ class SharedLinkEnrichmentWorkerTests {
         when(ogFetchService.fetch(anyString())).thenReturn(
                 new OgFetchResult("引战标题", null, null, null, null));
         when(classificationService.classify(any(), any(), any())).thenReturn(
-                new ClassificationResult("industry", false, false, true, false)); // flame=true
+                new ClassificationResult("industry", false, false, true, false, false)); // flame=true
 
         worker.enrich(7L);
 
@@ -250,5 +250,33 @@ class SharedLinkEnrichmentWorkerTests {
         assertThat(flags.get("nsfw")).isFalse();
         assertThat(flags.get("ad")).isFalse();
         assertThat(flags.get("flame")).isTrue();
+    }
+
+    // ── 场景 8：notResource=true → FLAGGED（兜底拦表情包/裸图片/dev URL） ────
+
+    @Test
+    void enrich_notResourceFlag_routesToFlagged() {
+        String host = "klipy.com";
+        SharedLink link = stubLink(8L, "https://klipy.com/gifs/hello-1234", host);
+        when(sharedLinkService.findById(8L)).thenReturn(Optional.of(link));
+        when(ogFetchService.fetch(anyString())).thenReturn(
+                new OgFetchResult(null, null, null, null, null));
+        when(classificationService.classify(any(), any(), any())).thenReturn(
+                new ClassificationResult("other", false, false, false, false, true)); // notResource=true
+
+        worker.enrich(8L);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Boolean>> flagsCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(sharedLinkService).enrich(eq(8L),
+                any(), any(), any(), any(), any(),
+                any(), flagsCaptor.capture(), eq(SharedLinkStatus.FLAGGED));
+
+        Map<String, Boolean> flags = flagsCaptor.getValue();
+        assertThat(flags.get("nsfw")).isFalse();
+        assertThat(flags.get("ad")).isFalse();
+        assertThat(flags.get("flame")).isFalse();
+        assertThat(flags.get("illegal")).isFalse();
+        assertThat(flags.get("notResource")).isTrue();
     }
 }

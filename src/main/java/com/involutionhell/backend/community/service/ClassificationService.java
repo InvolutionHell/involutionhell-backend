@@ -53,7 +53,7 @@ public class ClassificationService {
             中国大陆现行法律法规。根据输入信息，把链接分到以下分类之一：
             %s
 
-            同时判断内容是否存在 4 类安全问题。对 nsfw/ad/flame 采用"宁松勿严"
+            同时判断内容是否存在 5 类问题。对 nsfw/ad/flame/notResource 采用"宁松勿严"
             策略（社群正常技术分享放行）；对 illegal 必须严格，宁可误报。
 
             - nsfw: 色情、裸露、血腥暴力、猎奇不适。仅当**明确**涉及时为 true。
@@ -67,6 +67,19 @@ public class ClassificationService {
                     新闻报道、个人作品集。
             - flame: 明显引战 / 人身攻击 / 极端言论 / 刻意煽动对立。技术路线之争、
                     理性观点分歧**不算**。
+            - notResource: 链接本身不是"可分享的内容资源"（不是色情/广告/引战，
+                    只是没有信息价值，不该上架到社群分享库）。任一命中即 true：
+                    · 表情包 / 贴纸 / GIF（tenor / klipy / giphy / 微博表情等）
+                    · 单张图片 / 截图 / 头像（孤立的纯图片页面，非文章配图）
+                    · 视频/音频/媒体文件直链（路径以 .mp4 .mp3 .gif 等结尾）
+                    · 登录墙 / 错误页 / 验证码 / 404 / 维护页（OG 抓不到正文）
+                    · 内部 dev 通知页（GitHub PR/Issue/Commit、Jira 工单、CI 报告）
+                    · 空白页 / 广告聚合页 / 跳转中转页
+                    **反例（全部 false）**：技术博客文章、论文、开源项目主页（README）、
+                    新闻报道、文档教程、知乎/小红书/微博正常帖子、视频教程页
+                    （含正文/字幕的播放页，不是裸 .mp4 文件）。
+                    注意：仓库主页（如 github.com/foo/bar）允许，dev 子路径
+                    （github.com/foo/bar/pull/123）才命中本规则。
             - illegal: 疑似违反中国大陆法律法规的内容。任一命中即 true：
                     · 反对宪法基本原则、颠覆国家政权、煽动分裂国家、破坏国家统一
                     · 攻击党和政府、宣扬港独 / 台独 / 藏独 / 疆独
@@ -80,7 +93,7 @@ public class ClassificationService {
                     技术讨论涉及敏感话题但论点中立且学术讨论 **不算** illegal。
 
             严格只返回 JSON，不要任何解释、代码块标记（不要 ```json）或其他文字：
-            {"category": "<slug>", "nsfw": false, "ad": false, "flame": false, "illegal": false}
+            {"category": "<slug>", "nsfw": false, "ad": false, "flame": false, "illegal": false, "notResource": false}
             """;
 
     private final HttpClient httpClient;
@@ -249,9 +262,10 @@ public class ClassificationService {
             boolean nsfw    = result.path("nsfw").asBoolean(false);
             boolean ad      = result.path("ad").asBoolean(false);
             boolean flame   = result.path("flame").asBoolean(false);
-            // 旧模型可能不返回 illegal 字段，缺失时按 false 降级（不阻拦），
-            // 命中 nsfw/ad/flame 任一时已经会走 FLAGGED
-            boolean illegal = result.path("illegal").asBoolean(false);
+            // 旧模型可能不返回 illegal / notResource 字段，缺失时按 false 降级（不阻拦），
+            // 反正命中其它 flag 任一时已经会走 FLAGGED
+            boolean illegal     = result.path("illegal").asBoolean(false);
+            boolean notResource = result.path("notResource").asBoolean(false);
 
             // normalize 兜底：非法 slug 转 other
             String category = LinkCategory.normalize(rawCategory);
@@ -259,9 +273,9 @@ public class ClassificationService {
                 log.warn("classification 返回非法分类，降级为 other: host={} raw={}", host, rawCategory);
             }
 
-            log.debug("classification 完成: host={} category={} nsfw={} ad={} flame={} illegal={}",
-                    host, category, nsfw, ad, flame, illegal);
-            return new ClassificationResult(category, nsfw, ad, flame, illegal);
+            log.debug("classification 完成: host={} category={} nsfw={} ad={} flame={} illegal={} notResource={}",
+                    host, category, nsfw, ad, flame, illegal, notResource);
+            return new ClassificationResult(category, nsfw, ad, flame, illegal, notResource);
 
         } catch (Exception e) {
             log.warn("classification 响应解析失败，降级: host={} error={}", host, e.getMessage());
