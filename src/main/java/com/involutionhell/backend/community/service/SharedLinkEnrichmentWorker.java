@@ -110,8 +110,8 @@ public class SharedLinkEnrichmentWorker {
         if (cls.anyFlagSet()) {
             // 任一安全 flag 命中 → FLAGGED，进人工待审
             finalStatus = SharedLinkStatus.FLAGGED;
-            log.info("enrichment 标记 FLAGGED: linkId={} nsfw={} ad={} flame={} illegal={}",
-                    linkId, cls.nsfw(), cls.ad(), cls.flame(), cls.illegal());
+            log.info("enrichment 标记 FLAGGED: linkId={} nsfw={} ad={} flame={} illegal={} notResource={}",
+                    linkId, cls.nsfw(), cls.ad(), cls.flame(), cls.illegal(), cls.notResource());
         } else {
             finalStatus = SharedLinkStatus.APPROVED;
             log.info("enrichment AI 放行 APPROVED: linkId={} host={}", linkId, host);
@@ -119,10 +119,11 @@ public class SharedLinkEnrichmentWorker {
 
         // ── 步骤 4：回填数据库 ───────────────────────────────────────────
         Map<String, Boolean> flags = Map.of(
-                "nsfw",    cls.nsfw(),
-                "ad",      cls.ad(),
-                "flame",   cls.flame(),
-                "illegal", cls.illegal()
+                "nsfw",        cls.nsfw(),
+                "ad",          cls.ad(),
+                "flame",       cls.flame(),
+                "illegal",     cls.illegal(),
+                "notResource", cls.notResource()
         );
 
         sharedLinkService.enrich(
@@ -157,7 +158,7 @@ public class SharedLinkEnrichmentWorker {
                     null, null, null, null,
                     "enrichment worker 未捕获异常，降级",
                     "other",
-                    Map.of("nsfw", false, "ad", false, "flame", false),
+                    Map.of("nsfw", false, "ad", false, "flame", false, "illegal", false, "notResource", false),
                     SharedLinkStatus.PENDING_MANUAL
             );
             log.info("enrichment 降级完成: linkId={} -> PENDING_MANUAL", linkId);
