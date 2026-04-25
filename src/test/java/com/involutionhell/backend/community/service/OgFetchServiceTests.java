@@ -72,11 +72,17 @@ class OgFetchServiceTests {
             </html>
             """;
 
+    // 测试里的 host 一律用公网 IP 字面量（1.1.1.1 = Cloudflare DNS），
+    // 因为 OgFetchService 在发请求前会用 PrivateAddressGuard 解析 host，
+    // 用 mp.weixin.qq.com 这种真实域名会真的查 DNS，离线 CI 直接挂。
+    // 站点平台维度的逻辑（公众号 / 知乎 / 小红书）由 OG meta 内容覆盖即可，
+    // host 本身在这几条用例里不影响断言。
+
     // ── 服务器返回 403 Forbidden ─────────────────────────────────────────
     @Test
     void fetch_weixin_parsesOgTagsCorrectly() {
         OgFetchService service = new OgFetchService(stubHttpClient(200, WEIXIN_HTML));
-        OgFetchResult result = service.fetch("https://mp.weixin.qq.com/s/abc123");
+        OgFetchResult result = service.fetch("https://1.1.1.1/s/abc123");
 
         assertThat(result.isSuccess()).isTrue();
         assertThat(result.ogTitle()).isEqualTo("微信好文章标题");
@@ -89,7 +95,7 @@ class OgFetchServiceTests {
     @Test
     void fetch_zhihu_parsesOgTagsCorrectly() {
         OgFetchService service = new OgFetchService(stubHttpClient(200, ZHIHU_HTML));
-        OgFetchResult result = service.fetch("https://zhuanlan.zhihu.com/p/12345");
+        OgFetchResult result = service.fetch("https://1.1.1.1/p/12345");
 
         assertThat(result.isSuccess()).isTrue();
         assertThat(result.ogTitle()).isEqualTo("如何学习编程？");
@@ -102,7 +108,7 @@ class OgFetchServiceTests {
     void fetch_xiaohongshu_fallsBackToTwitterImage() {
         // 小红书 og:image 缺失时应降级到 twitter:image
         OgFetchService service = new OgFetchService(stubHttpClient(200, XIAOHONGSHU_HTML));
-        OgFetchResult result = service.fetch("https://www.xiaohongshu.com/explore/abc");
+        OgFetchResult result = service.fetch("https://1.1.1.1/explore/abc");
 
         assertThat(result.isSuccess()).isTrue();
         assertThat(result.ogTitle()).isEqualTo("小红书分享笔记");
@@ -114,7 +120,7 @@ class OgFetchServiceTests {
     void fetch_httpError403_returnsFailureResult() {
         // 服务器返回 403 → 降级，不抛异常
         OgFetchService service = new OgFetchService(stubHttpClient(403, "Forbidden"));
-        OgFetchResult result = service.fetch("https://mp.weixin.qq.com/s/private");
+        OgFetchResult result = service.fetch("https://1.1.1.1/s/private");
 
         assertThat(result.isSuccess()).isFalse();
         assertThat(result.errorMessage()).contains("403");
@@ -126,7 +132,7 @@ class OgFetchServiceTests {
         // 网络 IO 异常 → 降级，不抛异常
         OgFetchService service = new OgFetchService(new ThrowingHttpClient(
                 new IOException("Connection refused")));
-        OgFetchResult result = service.fetch("https://mp.weixin.qq.com/s/timeout");
+        OgFetchResult result = service.fetch("https://1.1.1.1/s/timeout");
 
         assertThat(result.isSuccess()).isFalse();
         assertThat(result.errorMessage()).containsIgnoringCase("Connection refused");
@@ -241,20 +247,25 @@ class OgFetchServiceTests {
         @Override public Optional<java.util.concurrent.Executor> executor() { return Optional.empty(); }
     }
 
-    /** Stub HTTP 响应（String body）。 */
+    /**
+     * Stub HTTP 响应。OgFetchService 现在用 BodyHandlers.ofInputStream()，
+     * 所以 body() 要返回 ByteArrayInputStream；headers 也要塞 utf-8 charset
+     * 走 resolveCharset 的 happy path。
+     */
     private record StubResponse<T>(int statusCode, String rawBody) implements HttpResponse<T> {
 
         @Override
         @SuppressWarnings("unchecked")
         public T body() {
-            // OgFetchService 用的是 BodyHandlers.ofString()，类型是 String
-            return (T) rawBody;
+            return (T) new ByteArrayInputStream(rawBody.getBytes(StandardCharsets.UTF_8));
         }
 
         @Override public HttpRequest request() { return null; }
         @Override public Optional<HttpResponse<T>> previousResponse() { return Optional.empty(); }
         @Override public HttpHeaders headers() {
-            return HttpHeaders.of(Map.of("content-type", List.of("text/html")), (k, v) -> true);
+            return HttpHeaders.of(
+                    Map.of("content-type", List.of("text/html; charset=utf-8")),
+                    (k, v) -> true);
         }
         @Override public Optional<SSLSession> sslSession() { return Optional.empty(); }
         @Override public URI uri() { return URI.create("https://example.com"); }

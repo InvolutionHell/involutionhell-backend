@@ -8,7 +8,7 @@ import com.involutionhell.backend.community.repository.LinkReportRepository;
 import com.involutionhell.backend.community.repository.SharedLinkRepository;
 import com.involutionhell.backend.community.util.UrlNormalizer;
 import com.involutionhell.backend.usercenter.model.UserAccount;
-import com.involutionhell.backend.usercenter.repository.UserAccountRepository;
+import com.involutionhell.backend.usercenter.service.UserCenterService;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -16,6 +16,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -49,7 +50,11 @@ public class SharedLinkService {
 
     private final SharedLinkRepository linkRepo;
     private final LinkReportRepository reportRepo;
-    private final UserAccountRepository userRepo;
+    /**
+     * 用 UserCenterService facade 而不是直接注入 UserAccountRepository：
+     * community 模块不应该直接摸 usercenter 的仓储层，跨模块访问只经过 service。
+     */
+    private final UserCenterService userCenterService;
 
     /**
      * 缓存 discord-bridge 账号 id，避免每次 submitInternal 都查一次库。
@@ -69,10 +74,10 @@ public class SharedLinkService {
 
     public SharedLinkService(SharedLinkRepository linkRepo,
                              LinkReportRepository reportRepo,
-                             UserAccountRepository userRepo) {
+                             UserCenterService userCenterService) {
         this.linkRepo = linkRepo;
         this.reportRepo = reportRepo;
-        this.userRepo = userRepo;
+        this.userCenterService = userCenterService;
     }
 
     @Autowired
@@ -88,7 +93,7 @@ public class SharedLinkService {
      */
     @PostConstruct
     void resolveBridgeId() {
-        userRepo.findByUsername(BRIDGE_USERNAME)
+        userCenterService.findByUsername(BRIDGE_USERNAME)
                 .map(UserAccount::id)
                 .ifPresentOrElse(
                         id -> {
@@ -103,10 +108,39 @@ public class SharedLinkService {
     /**
      * 提交分享链接。
      *
+     * <h3>事务边界</h3>
+     * {@code @Transactional} 把「限频 count + 去重 select + insert」三步包成
+     * 同一个 tx，给单次请求内部一致的快照视图（同 tx 里看到的 count 和后续
+     * insert 是同一份数据，不会出现 count 完一行被别人删掉的诡异现象）。
+     *
+     * 末尾的 enrichmentWorker.enrich 是 @Async 分发：只把 Runnable 扔进另一
+     * 条线程池，不在本事务线程上跑，故对事务边界无副作用。worker 内部已对
+     * findById 空返回做降级处理，覆盖「tx 还没 commit 就被 async 读到」的 race。
+     *
+     * <h3>已知限制 — 限频不是原子的</h3>
+     * 上面那段 SELECT COUNT(*) + INSERT 是经典的 check-then-act：在 PostgreSQL
+     * 默认的 Read Committed 隔离级别下，两个并发请求可能都 SELECT 到 count = N
+     * 然后都 INSERT，结果当日落库 N+2 条而不是 N+1，{@link #DAILY_SUBMIT_LIMIT}
+     * 配额会被穿透。@Transactional 不解决这条路径的并发竞态——它给的是
+     * 一致性快照，不是原子限频。
+     *
+     * 真正的原子限频要走以下方式之一（属于 follow-up，不在本 PR 范围）：
+     * <ul>
+     *   <li>DB UNIQUE 约束 {@code (submitter_id, bucket_day)} + 计数表 upsert，
+     *       让数据库在主键冲突上替你做并发互斥</li>
+     *   <li>单次 {@code SELECT COUNT(*) ... FOR UPDATE} 持行锁直到 INSERT 完成</li>
+     *   <li>外部限流（Redis INCR + EXPIRE / 网关 rate-limit）</li>
+     * </ul>
+     * 已记入 PR description 的 "Known follow-ups" 段。
+     *
      * @throws IllegalArgumentException URL 非法
      * @throws DuplicateKeyException    url_hash 重复（同一 URL 已存在）
-     * @throws RateLimitExceeded        当前用户 24h 内已达上限
+     * @throws RateLimitExceeded        当前用户 24h 内已达上限（best-effort，
+     *                                  并发场景下可能短暂穿透，见上方"已知限制"）
      */
+    // rollbackFor = Exception.class：Spring 默认只在 unchecked 上回滚；
+    // 后续若有人加 checked 异常（比如 IOException）不至于悄悄提交半条数据
+    @Transactional(rollbackFor = Exception.class)
     public SharedLink submit(Long submitterId, String rawUrl, String recommendation) {
         UrlNormalizer.Normalized norm = UrlNormalizer.normalize(rawUrl);
 
@@ -168,13 +202,14 @@ public class SharedLinkService {
      * - 同样的状态机（PENDING → APPROVED/PENDING_MANUAL/FLAGGED）
      * - 同样的 DuplicateKeyException 语义
      */
+    @Transactional(rollbackFor = Exception.class)
     public SharedLink submitInternal(String submitterLabel, String rawUrl, String recommendation) {
         UrlNormalizer.Normalized norm = UrlNormalizer.normalize(rawUrl);
 
         Long resolvedBridgeId = bridgeId;
         if (resolvedBridgeId == null) {
             // @PostConstruct 启动时没解析到（seed 还没跑），这里最后兜底再查一次
-            resolvedBridgeId = userRepo.findByUsername(BRIDGE_USERNAME)
+            resolvedBridgeId = userCenterService.findByUsername(BRIDGE_USERNAME)
                     .map(UserAccount::id)
                     .orElseThrow(() -> new IllegalStateException(
                             "discord-bridge 账号不存在，检查 schema.sql 是否已执行 seed"));
@@ -232,6 +267,7 @@ public class SharedLinkService {
         return prefix + "：" + original;
     }
 
+    @Transactional(readOnly = true)
     public Optional<SharedLink> findById(Long id) {
         return linkRepo.findById(id);
     }
@@ -241,6 +277,7 @@ public class SharedLinkService {
      *
      * @param sampleLimit PENDING_MANUAL 采样条数（展示最早 N 条），传 <=0 时不采样
      */
+    @Transactional(readOnly = true)
     public AdminSummary buildAdminSummary(int sampleLimit) {
         int pendingManual = linkRepo.countByStatus(SharedLinkStatus.PENDING_MANUAL);
         int flagged = linkRepo.countByStatus(SharedLinkStatus.FLAGGED);
@@ -259,14 +296,17 @@ public class SharedLinkService {
         return new AdminSummary(pendingManual, flagged, approvedLast24h, samples);
     }
 
+    @Transactional(readOnly = true)
     public List<SharedLink> listApproved(String category, int limit, int offset) {
         return linkRepo.findApproved(category, limit, offset);
     }
 
+    @Transactional(readOnly = true)
     public List<SharedLink> listBySubmitter(Long submitterId) {
         return linkRepo.findBySubmitter(submitterId);
     }
 
+    @Transactional(readOnly = true)
     public List<SharedLink> listPendingForAdmin() {
         return linkRepo.findPendingForAdmin();
     }
@@ -276,6 +316,7 @@ public class SharedLinkService {
      *
      * @return true = 此次举报触发了自动下架
      */
+    @Transactional(rollbackFor = Exception.class)
     public boolean report(Long linkId, Long reporterId, String reason) {
         LinkReport draft = new LinkReport(null, linkId, reporterId, reason, null);
         try {
@@ -301,6 +342,7 @@ public class SharedLinkService {
      * 异步 worker 回填 OG + 分类 + 安全判定。
      * M4 里调：提交后事件驱动或 @Async。
      */
+    @Transactional(rollbackFor = Exception.class)
     public void enrich(Long id,
                        String ogTitle, String ogDescription,
                        String ogCover, String ogSiteName, String ogFetchError,
