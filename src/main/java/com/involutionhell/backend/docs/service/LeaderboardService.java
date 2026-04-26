@@ -42,6 +42,16 @@ public class LeaderboardService {
         List<DocContributor> all = repository.findAll();
 
         // 按 githubId 聚合：累加 contributions、收集 docId、按日分桶计数
+        //
+        // dailyCounts 语义局限性（搬自原 generate-leaderboard.mjs，未做语义升级）：
+        //   doc_contributors 是按 (doc_id, github_id) 累计的稀疏表，每行 contributions 是
+        //   该用户对该文档至今的总提交数，last_contributed_at 只是最近一次时间戳。
+        //   所以这里 dailyCounts[day] += contributions 实际上是把"累计值"挂到"最后贡献日"，
+        //   并不是真正的"按日提交数"。前端把它当热力图渲染时，颜色深浅反映的是
+        //   "用户最近活跃日 + 该文档累计贡献量"，而不是当日增量。
+        //
+        // 真要做精确日热力图需要新增 doc_contribution_events 类按事件落库的表，
+        // 当前数据模型没有。短期保留该行为以兼容前端期望，长期看 schema 是否要演进。
         Map<Long, Aggregate> grouped = new LinkedHashMap<>();
         for (DocContributor c : all) {
             Aggregate agg = grouped.computeIfAbsent(c.githubId(), k -> new Aggregate());
