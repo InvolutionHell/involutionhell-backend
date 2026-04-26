@@ -10,6 +10,7 @@
 | 获取当前用户 | `GET /auth/me`（需 `satoken` header） |
 | 退出登录 | `POST /auth/logout`（需 `satoken` header） |
 | 健康检查 | `GET /actuator/health` |
+| 排行榜聚合（公开，前端 Vercel build 用） | `GET /api/public/leaderboard` |
 
 ---
 

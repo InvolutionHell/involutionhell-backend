@@ -68,8 +68,12 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-involution_hell}
       POSTGRES_USER: ${POSTGRES_USER:-involution}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+    # 只 bind 到 loopback，不再暴露公网。
+    # Spring Boot / pgAdmin / 自动备份容器都在同 docker network，走容器名 postgres:5432 即可。
+    # 历史上是 "5432:5432" 让 Vercel build 脚本远程查 doc_contributors 生成排行榜，
+    # 现已改走后端 /api/public/leaderboard，DB 不再需要对外开放。
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - ./docker/init-db:/docker-entrypoint-initdb.d
       - involution-postgres-data:/var/lib/postgresql/data
