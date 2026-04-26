@@ -36,6 +36,9 @@ class SharedLinkEnrichmentWorkerTests {
     private OgFetchService ogFetchService;
 
     @Mock
+    private OgFallbackService ogFallbackService;
+
+    @Mock
     private ClassificationService classificationService;
 
     @Mock

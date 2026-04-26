@@ -248,6 +248,17 @@ public class JdbcSharedLinkRepository implements SharedLinkRepository {
         jdbc.update("UPDATE shared_links SET probe_last_at = NOW() WHERE id = ?", id);
     }
 
+    @Override
+    public List<Long> findIdsMissingOgTitle(int limit) {
+        // 用 LIMIT 防止运维误调动了几万条全量重跑把 LLM 兜底配额炸了。
+        // 排序按 id ASC，先补老的（更可能是历史抓取规则不完善）。
+        return jdbc.queryForList(
+                "SELECT id FROM shared_links WHERE og_title IS NULL ORDER BY id ASC LIMIT ?",
+                Long.class,
+                limit
+        );
+    }
+
     private String serializeFlags(Map<String, Boolean> flags) {
         try {
             return objectMapper.writeValueAsString(flags == null ? new HashMap<>() : flags);

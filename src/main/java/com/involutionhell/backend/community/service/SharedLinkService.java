@@ -311,6 +311,12 @@ public class SharedLinkService {
         return linkRepo.findPendingForAdmin();
     }
 
+    /** 找出还没抓到 og_title 的链接 id（管理员批量重抓 OG 用）。 */
+    @Transactional(readOnly = true)
+    public List<Long> findIdsMissingOg(int limit) {
+        return linkRepo.findIdsMissingOgTitle(limit);
+    }
+
     /**
      * 举报。同一人重复举报同一条（DB UNIQUE）静默成功、不计数。
      *

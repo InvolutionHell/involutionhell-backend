@@ -1,5 +1,6 @@
 package com.involutionhell.backend.community.service;
 
+import com.involutionhell.backend.community.site.UrlNormalizer;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
@@ -32,6 +33,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 覆盖微信公众号 / 知乎 / 小红书三个平台的 OG 标签解析场景。
  */
 class OgFetchServiceTests {
+
+    /** 测试用空 normalizer：原样返回 URL，不做任何 site adapter 改写。 */
+    private static final UrlNormalizer NOOP_NORMALIZER = new UrlNormalizer(List.of());
+
 
     // ── 微信公众号典型 HTML ──────────────────────────────────────────────
     private static final String WEIXIN_HTML = """
@@ -81,7 +86,7 @@ class OgFetchServiceTests {
     // ── 服务器返回 403 Forbidden ─────────────────────────────────────────
     @Test
     void fetch_weixin_parsesOgTagsCorrectly() {
-        OgFetchService service = new OgFetchService(stubHttpClient(200, WEIXIN_HTML));
+        OgFetchService service = new OgFetchService(stubHttpClient(200, WEIXIN_HTML), NOOP_NORMALIZER);
         OgFetchResult result = service.fetch("https://1.1.1.1/s/abc123");
 
         assertThat(result.isSuccess()).isTrue();
@@ -94,7 +99,7 @@ class OgFetchServiceTests {
 
     @Test
     void fetch_zhihu_parsesOgTagsCorrectly() {
-        OgFetchService service = new OgFetchService(stubHttpClient(200, ZHIHU_HTML));
+        OgFetchService service = new OgFetchService(stubHttpClient(200, ZHIHU_HTML), NOOP_NORMALIZER);
         OgFetchResult result = service.fetch("https://1.1.1.1/p/12345");
 
         assertThat(result.isSuccess()).isTrue();
@@ -107,7 +112,7 @@ class OgFetchServiceTests {
     @Test
     void fetch_xiaohongshu_fallsBackToTwitterImage() {
         // 小红书 og:image 缺失时应降级到 twitter:image
-        OgFetchService service = new OgFetchService(stubHttpClient(200, XIAOHONGSHU_HTML));
+        OgFetchService service = new OgFetchService(stubHttpClient(200, XIAOHONGSHU_HTML), NOOP_NORMALIZER);
         OgFetchResult result = service.fetch("https://1.1.1.1/explore/abc");
 
         assertThat(result.isSuccess()).isTrue();
@@ -119,7 +124,7 @@ class OgFetchServiceTests {
     @Test
     void fetch_httpError403_returnsFailureResult() {
         // 服务器返回 403 → 降级，不抛异常
-        OgFetchService service = new OgFetchService(stubHttpClient(403, "Forbidden"));
+        OgFetchService service = new OgFetchService(stubHttpClient(403, "Forbidden"), NOOP_NORMALIZER);
         OgFetchResult result = service.fetch("https://1.1.1.1/s/private");
 
         assertThat(result.isSuccess()).isFalse();
@@ -131,7 +136,7 @@ class OgFetchServiceTests {
     void fetch_networkException_returnsFailureResult() {
         // 网络 IO 异常 → 降级，不抛异常
         OgFetchService service = new OgFetchService(new ThrowingHttpClient(
-                new IOException("Connection refused")));
+                new IOException("Connection refused")), NOOP_NORMALIZER);
         OgFetchResult result = service.fetch("https://1.1.1.1/s/timeout");
 
         assertThat(result.isSuccess()).isFalse();
@@ -141,7 +146,7 @@ class OgFetchServiceTests {
     @Test
     void parseOg_missingAllOgTags_fallsBackToTitleTag() {
         // 没有任何 og: 标签时，标题从 <title> 降级获取
-        OgFetchService service = new OgFetchService(stubHttpClient(200, ""));
+        OgFetchService service = new OgFetchService(stubHttpClient(200, ""), NOOP_NORMALIZER);
         String html = "<html><head><title>普通网页标题</title></head><body></body></html>";
         OgFetchResult result = service.parseOg(html, "https://example.com");
 

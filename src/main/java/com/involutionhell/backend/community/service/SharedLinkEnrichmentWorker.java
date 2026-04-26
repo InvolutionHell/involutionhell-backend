@@ -35,15 +35,18 @@ public class SharedLinkEnrichmentWorker {
     private static final Logger log = LoggerFactory.getLogger(SharedLinkEnrichmentWorker.class);
 
     private final OgFetchService ogFetchService;
+    private final OgFallbackService ogFallbackService;
     private final ClassificationService classificationService;
     private final SharedLinkService sharedLinkService;
     private final AlertWebhookClient alertWebhookClient;
 
     public SharedLinkEnrichmentWorker(OgFetchService ogFetchService,
+                                      OgFallbackService ogFallbackService,
                                       ClassificationService classificationService,
                                       SharedLinkService sharedLinkService,
                                       AlertWebhookClient alertWebhookClient) {
         this.ogFetchService = ogFetchService;
+        this.ogFallbackService = ogFallbackService;
         this.classificationService = classificationService;
         this.sharedLinkService = sharedLinkService;
         this.alertWebhookClient = alertWebhookClient;
@@ -90,6 +93,30 @@ public class SharedLinkEnrichmentWorker {
             // 防御性 catch：OgFetchService 内部已处理，正常不会到这里
             log.warn("enrichment OG 抓取异常（防御）: linkId={} error={}", linkId, e.getMessage());
             og = OgFetchResult.failure("抓取服务内部异常: " + e.getMessage());
+        }
+
+        // ── 步骤 1.5：OG 抓不到 title 时走 LLM 兜底猜一个 ──────────────────
+        // 触发场景：PDF（arxiv pdf 直链）、反爬空响应（scholar 204）、防火墙拦截、
+        // 微信公众号要 referer 等。LLM 根据 URL host/path 给个合理猜测，
+        // 让 feed 卡片不至于一片空白。失败也无所谓——og 仍是空，跟以前一样。
+        if (og.ogTitle() == null || og.ogTitle().isBlank()) {
+            try {
+                OgFallbackService.Guess guess = ogFallbackService.guess(url, host);
+                if (!guess.isEmpty()) {
+                    log.info("enrichment LLM 兜底 OG: linkId={} title={} reason={}",
+                            linkId, guess.title(), og.errorMessage());
+                    // 用兜底数据补 og（保留原 errorMessage 供排障）
+                    og = new OgFetchResult(
+                            guess.title(),
+                            guess.description(),
+                            og.ogCover(),
+                            og.ogSiteName(),
+                            og.errorMessage()
+                    );
+                }
+            } catch (Exception e) {
+                log.warn("enrichment OG 兜底异常（防御）: linkId={} error={}", linkId, e.getMessage());
+            }
         }
 
         // ── 步骤 2：DeepSeek 分类 ────────────────────────────────────────
