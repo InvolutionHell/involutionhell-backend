@@ -70,4 +70,7 @@ public interface SharedLinkRepository {
 
     /** 探活扫描需要的最小字段集合。 */
     record ProbeTarget(Long id, String url, int probeFailCount) {}
+
+    /** 找出 og_title IS NULL 的 link id，用于管理员批量重抓 OG。 */
+    List<Long> findIdsMissingOgTitle(int limit);
 }

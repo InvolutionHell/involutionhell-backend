@@ -3,6 +3,7 @@ package com.involutionhell.backend.community.service;
 import com.involutionhell.backend.community.model.SharedLink;
 import com.involutionhell.backend.community.model.SharedLinkStatus;
 import com.involutionhell.backend.community.util.DomainWhitelist;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -36,6 +37,9 @@ class SharedLinkEnrichmentWorkerTests {
     private OgFetchService ogFetchService;
 
     @Mock
+    private OgFallbackService ogFallbackService;
+
+    @Mock
     private ClassificationService classificationService;
 
     @Mock
@@ -46,6 +50,20 @@ class SharedLinkEnrichmentWorkerTests {
 
     @InjectMocks
     private SharedLinkEnrichmentWorker worker;
+
+    /**
+     * 默认 stub：兜底服务返回空 Guess，避免 ogTitle 为空的 case 走进
+     * {@code guess.isEmpty()} 时 Mockito 默认返回 null 触发 NPE
+     * （现在虽然被 worker 内的 catch 吞掉，但显式 stub 比依赖 catch 更可读）。
+     * 单测想验证兜底命中时可在该用例内 override。
+     */
+    @BeforeEach
+    void stubFallbackDefaults() {
+        // lenient：部分场景（如 link not found）根本不会进入兜底分支
+        org.mockito.Mockito.lenient()
+                .when(ogFallbackService.guess(any(), any()))
+                .thenReturn(OgFallbackService.Guess.empty());
+    }
 
     // ── 工具方法 ──────────────────────────────────────────────────────────
 

@@ -1,5 +1,6 @@
 package com.involutionhell.backend.community.service;
 
+import com.involutionhell.backend.community.site.UrlNormalizer;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
@@ -39,11 +40,15 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class OgFetchServiceSsrfTest {
 
+    /** 测试用空 normalizer：原样返回 URL，不做任何 site adapter 改写。 */
+    private static final UrlNormalizer NOOP_NORMALIZER = new UrlNormalizer(List.of());
+
+
     @Test
     void fetch_privateIpLoopback_blockedBeforeHttpCall() {
         // 127.0.0.1 应在 PrivateAddressGuard 阶段就被挡住，HttpClient 不应被调用
         RecordingHttpClient client = new RecordingHttpClient();
-        OgFetchService service = new OgFetchService(client);
+        OgFetchService service = new OgFetchService(client, NOOP_NORMALIZER);
 
         OgFetchResult result = service.fetch("http://127.0.0.1/");
 
@@ -56,7 +61,7 @@ class OgFetchServiceSsrfTest {
     void fetch_privateIpRfc1918_blockedBeforeHttpCall() {
         // 10.0.0.1 → RFC1918 私网，必须挡住
         RecordingHttpClient client = new RecordingHttpClient();
-        OgFetchService service = new OgFetchService(client);
+        OgFetchService service = new OgFetchService(client, NOOP_NORMALIZER);
 
         OgFetchResult result = service.fetch("http://10.0.0.1/");
 
@@ -73,7 +78,7 @@ class OgFetchServiceSsrfTest {
         ScriptedHttpClient client = new ScriptedHttpClient(List.of(
                 ScriptedResponse.redirect(302, "http://169.254.169.254/latest/meta-data/")
         ));
-        OgFetchService service = new OgFetchService(client);
+        OgFetchService service = new OgFetchService(client, NOOP_NORMALIZER);
 
         OgFetchResult result = service.fetch("https://1.1.1.1/og-test");
 
@@ -96,7 +101,7 @@ class OgFetchServiceSsrfTest {
         ScriptedHttpClient client = new ScriptedHttpClient(List.of(
                 ScriptedResponse.ok(html)
         ));
-        OgFetchService service = new OgFetchService(client);
+        OgFetchService service = new OgFetchService(client, NOOP_NORMALIZER);
 
         // 公网 IP 字面量：guard 不走 DNS，测试可在离线 / 受限 CI 里跑
         OgFetchResult result = service.fetch("https://1.1.1.1/og-article");
@@ -117,7 +122,7 @@ class OgFetchServiceSsrfTest {
         ScriptedHttpClient client = new ScriptedHttpClient(List.of(
                 ScriptedResponse.redirect(302, "ht!tp://bad host /x y")
         ));
-        OgFetchService service = new OgFetchService(client);
+        OgFetchService service = new OgFetchService(client, NOOP_NORMALIZER);
 
         OgFetchResult result = service.fetch("https://1.1.1.1/og");
 
@@ -138,7 +143,7 @@ class OgFetchServiceSsrfTest {
         ScriptedHttpClient client = new ScriptedHttpClient(List.of(
                 ScriptedResponse.okRaw(payload)
         ));
-        OgFetchService service = new OgFetchService(client);
+        OgFetchService service = new OgFetchService(client, NOOP_NORMALIZER);
 
         OgFetchResult result = service.fetch("https://1.1.1.1/huge");
 

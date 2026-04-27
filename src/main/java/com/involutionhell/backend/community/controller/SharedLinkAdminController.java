@@ -6,6 +6,7 @@ import com.involutionhell.backend.community.dto.SharedLinkView;
 import com.involutionhell.backend.community.model.SharedLink;
 import com.involutionhell.backend.community.model.SharedLinkStatus;
 import com.involutionhell.backend.community.repository.SharedLinkRepository;
+import com.involutionhell.backend.community.service.SharedLinkEnrichmentWorker;
 import com.involutionhell.backend.community.service.SharedLinkService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -44,11 +45,14 @@ public class SharedLinkAdminController {
 
     private final SharedLinkService service;
     private final SharedLinkRepository linkRepo;
+    private final SharedLinkEnrichmentWorker enrichmentWorker;
 
     public SharedLinkAdminController(SharedLinkService service,
-                                     SharedLinkRepository linkRepo) {
+                                     SharedLinkRepository linkRepo,
+                                     SharedLinkEnrichmentWorker enrichmentWorker) {
         this.service = service;
         this.linkRepo = linkRepo;
+        this.enrichmentWorker = enrichmentWorker;
     }
 
     @GetMapping("/pending")
@@ -90,5 +94,88 @@ public class SharedLinkAdminController {
                 .map(link -> ResponseEntity.ok(ApiResponse.ok(SharedLinkView.from(link))))
                 .orElseGet(() -> ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                         .body(new ApiResponse<>(false, "link disappeared after update", null)));
+    }
+
+    /**
+     * 重跑 enrichment（OG 抓取 + LLM 兜底 + 分类）。
+     *
+     * 用途：
+     * - OG 抓取规则升级后回填历史链接
+     * - 单条链接首次抓取卡在限流 / 反爬，等过段时间手动重试
+     * - 测试新 SiteAdapter / OgFallback 效果
+     *
+     * 异步触发，不等结果——立即返回 202 Accepted，前端轮询 /pending 看新数据。
+     * status 不变（不会把 APPROVED 推回 PENDING），enrich() 内部会原地覆盖 og_* 字段。
+     */
+    @PostMapping("/{id}/refetch-og")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> refetchOg(@PathVariable Long id) {
+        Optional<SharedLink> maybe = linkRepo.findById(id);
+        if (maybe.isEmpty()) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(new ApiResponse<>(false, "link not found", null));
+        }
+        log.info("admin refetch-og shared-link id={}", id);
+        enrichmentWorker.enrich(id);
+        return ResponseEntity.accepted()
+                .body(ApiResponse.ok(Map.of("id", id, "queued", true)));
+    }
+
+    /**
+     * 批量重跑 enrichment。POST body: {"ids": [1, 2, 3]}。
+     * 用 ids: ["all"] 表示对全表扫描所有 og_title IS NULL 的链接重跑（运维用）。
+     *
+     * 防误操作：单次最多 100 条；"all" 也走相同上限。
+     */
+    @PostMapping("/refetch-og/bulk")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> bulkRefetchOg(
+            @RequestBody Map<String, Object> body) {
+        Object idsRaw = body.get("ids");
+        List<Long> ids;
+        if (idsRaw instanceof List<?> raw && raw.size() == 1 && "all".equals(raw.get(0))) {
+            ids = service.findIdsMissingOg(100);
+        } else if (idsRaw instanceof List<?> raw) {
+            // 显式逐项校验：null / 空字符串 / 非数字字符串都返回 400，
+            // 不让 NumberFormatException / NPE 漏出去变成 500。
+            try {
+                ids = raw.stream()
+                        .limit(100)
+                        .map(SharedLinkAdminController::parseIdOrThrow)
+                        .toList();
+            } catch (IllegalArgumentException e) {
+                return ResponseEntity.badRequest()
+                        .body(new ApiResponse<>(false, e.getMessage(), null));
+            }
+        } else {
+            return ResponseEntity.badRequest()
+                    .body(new ApiResponse<>(false, "missing or invalid 'ids' field", null));
+        }
+        log.info("admin bulk refetch-og count={}", ids.size());
+        for (Long id : ids) {
+            enrichmentWorker.enrich(id);
+        }
+        return ResponseEntity.accepted()
+                .body(ApiResponse.ok(Map.of("queued", ids.size(), "ids", ids)));
+    }
+
+    /**
+     * 把 ids 列表里的单个元素强转成 Long。失败一律抛 {@link IllegalArgumentException}，
+     * 由调用方转 400。允许 Number 直接拿 longValue，字符串走 parseLong（首尾 trim）。
+     */
+    private static Long parseIdOrThrow(Object v) {
+        if (v == null) {
+            throw new IllegalArgumentException("ids 包含 null 元素");
+        }
+        if (v instanceof Number n) {
+            return n.longValue();
+        }
+        String s = v.toString().trim();
+        if (s.isEmpty()) {
+            throw new IllegalArgumentException("ids 包含空字符串");
+        }
+        try {
+            return Long.parseLong(s);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("ids 包含非数字元素: " + s);
+        }
     }
 }

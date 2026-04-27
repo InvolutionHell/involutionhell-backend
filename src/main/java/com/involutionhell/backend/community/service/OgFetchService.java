@@ -1,6 +1,7 @@
 package com.involutionhell.backend.community.service;
 
 import com.involutionhell.backend.common.security.PrivateAddressGuard;
+import com.involutionhell.backend.community.site.UrlNormalizer;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
@@ -62,8 +63,27 @@ public class OgFetchService {
 
     private static final Logger log = LoggerFactory.getLogger(OgFetchService.class);
 
-    /** 抓取时声明的 User-Agent，模拟通用浏览器机器人。 */
-    static final String USER_AGENT = "Mozilla/5.0 (compatible; InvolutionHellBot/1.0)";
+    /**
+     * User-Agent：用纯浏览器伪装，**不带 Bot 字样**。
+     *
+     * 历史踩坑：原来用 "Mozilla/5.0 (compatible; InvolutionHellBot/1.0)"，
+     * 微信公众号 (mp.weixin.qq.com) 见到 Bot 字样会返回精简版 17KB HTML，
+     * 里面没有 og:title/og:description，连 <title> 都被剥掉。
+     * 换成正常 Chrome UA 后能拿到完整 4MB+ 文章页（OG 在前几 KB 的 head 里）。
+     *
+     * 我们仍然遵守 robots.txt 是另一回事（由 robotstxt parser 处理，本服务只
+     * 负责抓 OG meta），UA 伪装只为绕过那些靠 UA 字符串做"软反爬"的站点。
+     */
+    static final String USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            + "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
+    /**
+     * <code>&lt;/head&gt;</code> 字节序列。流式抓取时一旦读到这个 marker 就立即停止
+     * 后续读取——OG meta 全在 head 里，再多读 body 部分就是浪费带宽 + 撑爆内存。
+     * 用 ASCII 字节比较避免编码转换开销（HTML 标签本身就是 ASCII）。
+     */
+    private static final byte[] HEAD_END_MARKER =
+            "</head>".getBytes(StandardCharsets.US_ASCII);
 
     /**
      * 单次请求超时，10 秒足够公众号/知乎把 response head + OG meta 所在的
@@ -82,17 +102,28 @@ public class OgFetchService {
     static final int MAX_REDIRECTS = 3;
 
     /**
-     * 响应体读取上限（2 MB）。OG meta 全在 {@code <head>} 里，2 MB 足够所有
-     * 正常站点；超上限按“疑似恶意无限流 / chunked 无尽”处理，立刻中断读取。
+     * 响应体读取上限（8 MB）。OG meta 全在 {@code <head>} 里，理论上几 KB 够用，
+     * 但部分站点（如微信公众号）会在 head 之前塞 megabyte 量级的 inline base64
+     * 图片 + 内联 CSS。8MB 覆盖目前已知所有"正常但臃肿"的站点。
+     *
+     * 真正的优化是 {@link #HEAD_END_MARKER} 早停 —— 流式扫描遇到 {@code </head>}
+     * 立即停读，绝大多数站点只读几十 KB 就够。这个上限只是无限流防御兜底。
      *
      * 之所以要在应用层兜底限流：JDK {@code BodyHandlers.ofString()} 本身
      * 没有 size 限制，配上 10 秒 timeout 仍然可能被攻击者的无限流撑爆堆。
      */
-    static final int MAX_BODY_BYTES = 2 * 1024 * 1024;
+    static final int MAX_BODY_BYTES = 8 * 1024 * 1024;
 
     private final HttpClient httpClient;
+    private final UrlNormalizer urlNormalizer;
 
-    public OgFetchService() {
+    /**
+     * Spring 注入入口。@Autowired 显式标注是因为本类还存在 package-private 测试 ctor，
+     * Spring 看到两个 ctor 会拒绝自动选（NoUniqueBeanDefinitionException 反向版）。
+     */
+    @org.springframework.beans.factory.annotation.Autowired
+    public OgFetchService(UrlNormalizer urlNormalizer) {
+        this.urlNormalizer = urlNormalizer;
         // 自建 HttpClient，避免占用 openai 模块的 Bean；超时策略独立管理
         // followRedirects 改成 NEVER，redirect 由本类手动处理并在每一跳复查 host
         this.httpClient = HttpClient.newBuilder()
@@ -101,21 +132,34 @@ public class OgFetchService {
                 .build();
     }
 
-    /** 测试注入点：允许传入 stub HttpClient。 */
-    OgFetchService(HttpClient httpClient) {
+    /** 测试注入点：允许传入 stub HttpClient + normalizer。 */
+    OgFetchService(HttpClient httpClient, UrlNormalizer urlNormalizer) {
         this.httpClient = httpClient;
+        this.urlNormalizer = urlNormalizer;
     }
 
     /**
      * 抓取指定 URL 的 Open Graph 元数据。
      *
-     * @param url 已规范化的目标 URL
+     * @param url 原始 URL（内部会先过 SiteAdapter 链做规范化）
      * @return 抓取结果；失败时 errorMessage 非 null，og 字段全 null
      */
     public OgFetchResult fetch(String url) {
         log.debug("og-fetch 开始: url={}", url);
+        if (url == null || url.isBlank()) {
+            return OgFetchResult.failure("url is null or blank");
+        }
+        // 先过 site adapter 链：把已知抓不到 OG 的 URL 重写到等价可抓页面
+        // (arxiv pdf → abs, scholar_url → 真实链接, ...)
+        // 容错：normalize 在异常或 url 为 null 时可能返回 null，回退到原 URL，避免后续 NPE。
+        String normalized = urlNormalizer.normalize(url);
+        if (normalized == null) {
+            normalized = url;
+        } else if (!normalized.equals(url)) {
+            log.info("og-fetch URL 规范化: {} -> {}", url, normalized);
+        }
         try {
-            String currentUrl = url;
+            String currentUrl = normalized;
             for (int hop = 0; hop <= MAX_REDIRECTS; hop++) {
                 // 每一跳都要重新校验 host —— 防止 302 把我们扔到内网
                 URI uri;
@@ -199,9 +243,19 @@ public class OgFetchService {
                     return OgFetchResult.failure(reason);
                 }
 
-                // 2xx：流式读取 body，边读边计数；命中 MAX_BODY_BYTES 立刻中断
-                Charset charset = resolveCharset(
-                        response.headers().firstValue("Content-Type").orElse(null));
+                // 2xx：先看 Content-Type，非 HTML（如 application/pdf、image/*）
+                // 直接软失败 —— 把 PDF 二进制流塞给 JSoup 解析既浪费 CPU 又必然返回空 OG。
+                // 调用方（SharedLinkEnrichmentWorker）会按这个 errorMessage 决定走 LLM 兜底。
+                String contentType = response.headers().firstValue("Content-Type").orElse(null);
+                if (!isHtmlContentType(contentType)) {
+                    drainAndClose(response.body());
+                    String typeForMsg = contentType == null ? "(missing)" : contentType.split(";", 2)[0].trim();
+                    log.info("og-fetch 跳过非 HTML 响应: url={} content-type={}", currentUrl, typeForMsg);
+                    return OgFetchResult.failure("non-html content-type: " + typeForMsg);
+                }
+
+                // 流式读取 body，边读边计数；命中 MAX_BODY_BYTES 或 </head> 立刻中断
+                Charset charset = resolveCharset(contentType);
                 BodyReadResult bodyResult = readBodyCapped(response.body(), charset);
                 if (bodyResult.exceededLimit) {
                     log.warn("og-fetch 响应体超上限 {}B: url={}", MAX_BODY_BYTES, currentUrl);
@@ -234,19 +288,23 @@ public class OgFetchService {
      * 边读边计数的 body 读取：一次 read 最多 {@code MAX_BODY_BYTES} 字节；
      * 超上限立刻 close 流并返回 {@code exceededLimit=true}，不把后续字节收进 buffer。
      *
+     * 优化：每个 chunk 写入 buffer 后扫一次 {@link #HEAD_END_MARKER}，命中
+     * {@code </head>} 立即停读 —— OG meta 全在 head 里，没必要把整个 body 吞进堆。
+     * 微信公众号文章典型情况下 head 在前 50KB 内，body 含 megabyte 级 base64
+     * 图片，早停能省 99% 带宽 + 内存。
+     *
      * 选择 {@link ByteArrayOutputStream} + 手动循环而不是 {@code readAllBytes}
      * 是因为 readAllBytes 会在 close 前把整条流全吃进堆里，完全绕开我们的上限。
      */
     private static BodyReadResult readBodyCapped(InputStream in, Charset charset) throws IOException {
         try (InputStream stream = in) {
-            ByteArrayOutputStream buf = new ByteArrayOutputStream(
+            ExposedByteArrayOutputStream buf = new ExposedByteArrayOutputStream(
                     Math.min(64 * 1024, MAX_BODY_BYTES));
             byte[] chunk = new byte[8 * 1024];
             int total = 0;
             int n;
             while ((n = stream.read(chunk)) != -1) {
                 if (total + n > MAX_BODY_BYTES) {
-                    // 命中上限：只保留已读到上限的字节，丢弃超出部分，停止读取
                     int remaining = MAX_BODY_BYTES - total;
                     if (remaining > 0) {
                         buf.write(chunk, 0, remaining);
@@ -255,9 +313,65 @@ public class OgFetchService {
                 }
                 buf.write(chunk, 0, n);
                 total += n;
+                // 早停：扫描 buffer 末尾找 </head>。回看 chunk 大小 + marker 长度
+                // 即可，不用每次扫整个 buffer。命中后剩余 body 直接丢弃，不影响 OG 解析。
+                if (containsHeadEndNearTail(buf, n + HEAD_END_MARKER.length)) {
+                    return new BodyReadResult(buf.toString(charset), false);
+                }
             }
             return new BodyReadResult(buf.toString(charset), false);
         }
+    }
+
+    /**
+     * 在 buffer 末尾 {@code lookbackBytes} 范围内查找 {@code </head>}。
+     * 直接读 ExposedByteArrayOutputStream 的内部数组，避免 toByteArray() 每个 chunk
+     * 都复制整个已读内容（在 4MB+ 页面上是 O(n²) 级别的拷贝开销）。
+     */
+    private static boolean containsHeadEndNearTail(ExposedByteArrayOutputStream buf, int lookbackBytes) {
+        int size = buf.size();
+        if (size < HEAD_END_MARKER.length) return false;
+        int from = Math.max(0, size - lookbackBytes);
+        byte[] all = buf.internalBuffer();
+        for (int i = from; i <= size - HEAD_END_MARKER.length; i++) {
+            // 大小写不敏感比较：HTML 既允许 </head> 也允许 </HEAD>
+            boolean match = true;
+            for (int j = 0; j < HEAD_END_MARKER.length; j++) {
+                byte a = all[i + j];
+                byte b = HEAD_END_MARKER[j];
+                // ASCII 大小写折叠
+                if (a >= 'A' && a <= 'Z') a += 32;
+                if (b >= 'A' && b <= 'Z') b += 32;
+                if (a != b) { match = false; break; }
+            }
+            if (match) return true;
+        }
+        return false;
+    }
+
+    /**
+     * 暴露 {@link ByteArrayOutputStream} 内部 buffer 的子类，用于 marker 扫描时零拷贝读取。
+     * 注意 internalBuffer() 长度可能大于 size()，调用方必须用 {@link #size()} 限定有效范围。
+     */
+    private static final class ExposedByteArrayOutputStream extends ByteArrayOutputStream {
+        ExposedByteArrayOutputStream(int initialCapacity) { super(initialCapacity); }
+        byte[] internalBuffer() { return buf; }
+    }
+
+    /**
+     * Content-Type 是否属于 HTML 系列（接受 text/html、application/xhtml+xml、application/xml 等）。
+     * 缺失的 Content-Type 也按 HTML 处理（少数小站完全不发这个 header），让后续 JSoup 自己判定。
+     */
+    static boolean isHtmlContentType(String contentType) {
+        if (contentType == null || contentType.isBlank()) {
+            return true; // 缺失视为可能 HTML，让 JSoup 兜底
+        }
+        String lower = contentType.toLowerCase(Locale.ROOT);
+        return lower.startsWith("text/html")
+                || lower.startsWith("application/xhtml")
+                || lower.startsWith("application/xml")
+                || lower.startsWith("text/xml")
+                || lower.startsWith("text/plain"); // 少数 CMS 误标 text/plain 但实际是 HTML
     }
 
     /**
