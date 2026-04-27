@@ -141,15 +141,21 @@ public class OgFetchService {
     /**
      * 抓取指定 URL 的 Open Graph 元数据。
      *
-     * @param url 已规范化的目标 URL
+     * @param url 原始 URL（内部会先过 SiteAdapter 链做规范化）
      * @return 抓取结果；失败时 errorMessage 非 null，og 字段全 null
      */
     public OgFetchResult fetch(String url) {
         log.debug("og-fetch 开始: url={}", url);
+        if (url == null || url.isBlank()) {
+            return OgFetchResult.failure("url is null or blank");
+        }
         // 先过 site adapter 链：把已知抓不到 OG 的 URL 重写到等价可抓页面
         // (arxiv pdf → abs, scholar_url → 真实链接, ...)
+        // 容错：normalize 在异常或 url 为 null 时可能返回 null，回退到原 URL，避免后续 NPE。
         String normalized = urlNormalizer.normalize(url);
-        if (!normalized.equals(url)) {
+        if (normalized == null) {
+            normalized = url;
+        } else if (!normalized.equals(url)) {
             log.info("og-fetch URL 规范化: {} -> {}", url, normalized);
         }
         try {
@@ -292,7 +298,7 @@ public class OgFetchService {
      */
     private static BodyReadResult readBodyCapped(InputStream in, Charset charset) throws IOException {
         try (InputStream stream = in) {
-            ByteArrayOutputStream buf = new ByteArrayOutputStream(
+            ExposedByteArrayOutputStream buf = new ExposedByteArrayOutputStream(
                     Math.min(64 * 1024, MAX_BODY_BYTES));
             byte[] chunk = new byte[8 * 1024];
             int total = 0;
@@ -318,16 +324,15 @@ public class OgFetchService {
     }
 
     /**
-     * 在 ByteArrayOutputStream 末尾 {@code lookbackBytes} 范围内查找 {@code </head>}。
-     * 用 toByteArray 拿底层字节会复制一份；为了避免大 buffer 反复复制，只读末尾切片。
+     * 在 buffer 末尾 {@code lookbackBytes} 范围内查找 {@code </head>}。
+     * 直接读 ExposedByteArrayOutputStream 的内部数组，避免 toByteArray() 每个 chunk
+     * 都复制整个已读内容（在 4MB+ 页面上是 O(n²) 级别的拷贝开销）。
      */
-    private static boolean containsHeadEndNearTail(ByteArrayOutputStream buf, int lookbackBytes) {
+    private static boolean containsHeadEndNearTail(ExposedByteArrayOutputStream buf, int lookbackBytes) {
         int size = buf.size();
         if (size < HEAD_END_MARKER.length) return false;
         int from = Math.max(0, size - lookbackBytes);
-        // BAOS 没有 substring API，只能整体取字节再切片；用 String indexOf 走 ASCII 路径
-        // 比手写 KMP 简单且足够快（lookback 通常 < 16KB）。
-        byte[] all = buf.toByteArray();
+        byte[] all = buf.internalBuffer();
         for (int i = from; i <= size - HEAD_END_MARKER.length; i++) {
             // 大小写不敏感比较：HTML 既允许 </head> 也允许 </HEAD>
             boolean match = true;
@@ -342,6 +347,15 @@ public class OgFetchService {
             if (match) return true;
         }
         return false;
+    }
+
+    /**
+     * 暴露 {@link ByteArrayOutputStream} 内部 buffer 的子类，用于 marker 扫描时零拷贝读取。
+     * 注意 internalBuffer() 长度可能大于 size()，调用方必须用 {@link #size()} 限定有效范围。
+     */
+    private static final class ExposedByteArrayOutputStream extends ByteArrayOutputStream {
+        ExposedByteArrayOutputStream(int initialCapacity) { super(initialCapacity); }
+        byte[] internalBuffer() { return buf; }
     }
 
     /**

@@ -82,7 +82,7 @@ public class OgFallbackService {
         try {
             String userContent = "URL: " + url + "\nHost: " + (host == null ? "(unknown)" : host);
             String requestBody = buildRequestBody(SYSTEM_PROMPT, userContent);
-            HttpRequest request = HttpRequest.newBuilder(URI.create(properties.apiUrl() + "/chat/completions"))
+            HttpRequest request = HttpRequest.newBuilder(URI.create(resolveChatCompletionsUrl()))
                     .header("Content-Type", "application/json")
                     .header("Authorization", "Bearer " + properties.apiKey())
                     .timeout(TIMEOUT)
@@ -102,6 +102,20 @@ public class OgFallbackService {
             log.warn("og-fallback 异常: host={} error={}", host, e.getMessage());
             return Guess.empty();
         }
+    }
+
+    /**
+     * 兼容两种 apiUrl 配置：
+     * - 仅 base（如 https://api.deepseek.com/v1）→ 拼接 /chat/completions
+     * - 完整路径（如 https://api.deepseek.com/v1/chat/completions）→ 原样使用，避免双后缀 404
+     * 与 ClassificationService / HttpOpenAiStreamGateway 行为对齐。
+     */
+    private String resolveChatCompletionsUrl() {
+        String apiUrl = properties.apiUrl();
+        if (!apiUrl.endsWith("/chat/completions")) {
+            apiUrl = apiUrl.replaceAll("/+$", "") + "/chat/completions";
+        }
+        return apiUrl;
     }
 
     private String buildRequestBody(String systemContent, String userContent) {

@@ -18,7 +18,8 @@ import java.util.Set;
 public class UrlNormalizer {
 
     private static final Logger log = LoggerFactory.getLogger(UrlNormalizer.class);
-    private static final int MAX_HOPS = 5;
+    /** 链式 normalize 最大跳数（同 visited set 防环兜底）。包可见以便 SiteAdapter javadoc 引用。 */
+    static final int MAX_HOPS = 5;
 
     private final List<SiteAdapter> adapters;
 

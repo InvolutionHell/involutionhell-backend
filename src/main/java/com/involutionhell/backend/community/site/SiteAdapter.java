@@ -8,7 +8,8 @@ package com.involutionhell.backend.community.site;
  * - scholar.google.com/scholar_url?url=&lt;real-link&gt; → 直接还原 real-link（scholar 是 click tracker）
  *
  * 设计：纯函数风格的 normalize 接口 —— 输入 URL 返回 URL，链式调用所有 adapter 直到没人改写。
- * 顺序无关：多个 adapter 之间不应有依赖。如果 normalize 后 URL 变了，重跑一轮（最多 3 跳，防环）。
+ * 顺序无关：多个 adapter 之间不应有依赖。如果 normalize 后 URL 变了，重跑一轮（最大跳数见
+ * {@link UrlNormalizer#MAX_HOPS}，防环）。
  */
 public interface SiteAdapter {
 

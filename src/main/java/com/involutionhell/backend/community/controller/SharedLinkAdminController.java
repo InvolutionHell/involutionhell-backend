@@ -134,10 +134,17 @@ public class SharedLinkAdminController {
         if (idsRaw instanceof List<?> raw && raw.size() == 1 && "all".equals(raw.get(0))) {
             ids = service.findIdsMissingOg(100);
         } else if (idsRaw instanceof List<?> raw) {
-            ids = raw.stream()
-                    .map(v -> v instanceof Number n ? n.longValue() : Long.parseLong(v.toString()))
-                    .limit(100)
-                    .toList();
+            // 显式逐项校验：null / 空字符串 / 非数字字符串都返回 400，
+            // 不让 NumberFormatException / NPE 漏出去变成 500。
+            try {
+                ids = raw.stream()
+                        .limit(100)
+                        .map(SharedLinkAdminController::parseIdOrThrow)
+                        .toList();
+            } catch (IllegalArgumentException e) {
+                return ResponseEntity.badRequest()
+                        .body(new ApiResponse<>(false, e.getMessage(), null));
+            }
         } else {
             return ResponseEntity.badRequest()
                     .body(new ApiResponse<>(false, "missing or invalid 'ids' field", null));
@@ -148,5 +155,27 @@ public class SharedLinkAdminController {
         }
         return ResponseEntity.accepted()
                 .body(ApiResponse.ok(Map.of("queued", ids.size(), "ids", ids)));
+    }
+
+    /**
+     * 把 ids 列表里的单个元素强转成 Long。失败一律抛 {@link IllegalArgumentException}，
+     * 由调用方转 400。允许 Number 直接拿 longValue，字符串走 parseLong（首尾 trim）。
+     */
+    private static Long parseIdOrThrow(Object v) {
+        if (v == null) {
+            throw new IllegalArgumentException("ids 包含 null 元素");
+        }
+        if (v instanceof Number n) {
+            return n.longValue();
+        }
+        String s = v.toString().trim();
+        if (s.isEmpty()) {
+            throw new IllegalArgumentException("ids 包含空字符串");
+        }
+        try {
+            return Long.parseLong(s);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("ids 包含非数字元素: " + s);
+        }
     }
 }
