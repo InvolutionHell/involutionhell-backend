@@ -88,7 +88,25 @@ cp .env.example .env
 docker compose up -d postgres redis
 ```
 
-### 3. 启动后端服务
+### 3. 配置 GitHub OAuth（首次必做）
+后端的登录走 GitHub OAuth，**每个开发者要用自己的 OAuth App**——不要复制别人的 Client ID，回调 URL 不会匹配，GitHub 会直接拒绝：
+
+> The redirect_uri is not associated with this application.
+
+注册步骤：
+1. 打开 [GitHub Settings → Developer settings → OAuth Apps](https://github.com/settings/developers) → **New OAuth App**
+2. **Authorization callback URL** 必须填 `http://localhost:3010/api/auth/callback/github`（端口跟前端 dev 一致；后端会拼 `${AUTH_URL}/api/auth/callback/github`，两边要对齐）
+3. 创建后把 Client ID 和（点 Generate 出来的）Client Secret 填到 `.env`：
+   ```
+   AUTH_GITHUB_ID=Ov23li...
+   AUTH_GITHUB_SECRET=xxxx
+   AUTH_URL=http://localhost:3010
+   ```
+
+> [!TIP]
+> 生产环境用另一个 OAuth App（仓库维护者持有，回调注册的是 `https://involutionhell.com/...`），跟本地这套互不干扰。本地 `.env` 只放你自己的 dev key。
+
+### 4. 启动后端服务
 在根目录下直接启动 JVM 模式：
 
 ```bash
@@ -97,7 +115,7 @@ docker compose up -d postgres redis
 
 默认接口入口：`http://127.0.0.1:8080`
 
-### 4. 调用示例接口
+### 5. 调用示例接口
 内置种子账号：
 - `admin / Admin@123456`
 - `alice / Alice@123456`
