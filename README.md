@@ -47,7 +47,7 @@
 - **安全 & 认证**: Spring Security OAuth2 Client 6.x
 - **数据库**: PostgreSQL 18 (与 NEON 环境一致)
 - **AI 抽象**: OpenAI Responses API (支持流式转发)
-- **中间件**: Redis 7, Caddy 2.10
+- **中间件**: Caddy 2.10
 - **构建工具**: Maven 3.9+, GraalVM Build Tools
 
 ## 目录概览
@@ -55,7 +55,7 @@
 ```text
 .
 ├── .mvn/                             # Maven Wrapper 配置
-├── docker-compose.yml                # 中间件编排 (Postgres, Redis, Caddy, Backend)
+├── docker-compose.yml                # 中间件编排 (Postgres, Caddy, Backend)
 ├── docker/init-db/init.sql           # 数据库初始化脚本 (含 Schema 与种子数据)
 ├── src/
 │   ├── main/
@@ -83,9 +83,9 @@ cp .env.example .env
 为了避免繁琐的本地数据库安装和环境变量配置，推荐使用 Docker 一键运行：
 
 ```bash
-# 启动 PostgreSQL 18 与 Redis 7
+# 启动 PostgreSQL 18
 # 此操作会自动创建 Schema 并初始化种子数据 (一致性与 NEON 保持同步)
-docker compose up -d postgres redis
+docker compose up -d postgres
 ```
 
 ### 3. 配置 GitHub OAuth（首次必做）
