@@ -107,11 +107,20 @@ docker compose up -d postgres redis
 > 生产环境用另一个 OAuth App（仓库维护者持有，回调注册的是 `https://involutionhell.com/...`），跟本地这套互不干扰。本地 `.env` 只放你自己的 dev key。
 
 ### 4. 启动后端服务
-在根目录下直接启动 JVM 模式：
+按以下任一方式启动:
+
+**方式 1:命令行启动**
 
 ```bash
+set -a && . ./.env && set +a
 ./mvnw spring-boot:run
 ```
+
+`set -a` 让后续读到的变量自动 export 为环境变量,`. ./.env` 加载文件,`set +a` 关闭自动 export。这样 `.env` 里的变量会被传递给后续启动的 Spring Boot 进程。
+
+**方式 2:IntelliJ IDEA 启动**
+
+安装 [EnvFile](https://plugins.jetbrains.com/plugin/7861-envfile) 插件后,在 Run Configuration → EnvFile 标签页中启用并选择 `.env` 文件,点击 Run 即可启动。
 
 默认接口入口：`http://127.0.0.1:8080`
 
