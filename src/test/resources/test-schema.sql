@@ -52,6 +52,10 @@ CREATE TABLE IF NOT EXISTS user_follows (
     FOREIGN KEY (follower_id) REFERENCES user_accounts(id) ON DELETE CASCADE,
     FOREIGN KEY (followee_id) REFERENCES user_accounts(id) ON DELETE CASCADE
 );
+-- 与生产 schema 一致的"粉丝列表"二级索引；测试 schema 缺这个索引会让
+-- "索引被误删"这种 drift 逃过 CI（即便表本身存在）
+CREATE INDEX IF NOT EXISTS idx_user_follows_followee
+    ON user_follows(followee_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS event_interests (
     event_id   BIGINT      NOT NULL,

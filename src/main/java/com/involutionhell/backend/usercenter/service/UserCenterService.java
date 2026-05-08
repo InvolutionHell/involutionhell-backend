@@ -114,16 +114,29 @@ public class UserCenterService {
      */
     public UserView updateAuthorization(Long userId, UserAuthorizationUpdateRequest request) {
         Set<String> requestedRoles = request.roles() == null ? Set.of() : request.roles();
+        // 顺序校验：先拒非法元素（null / 空白），再拒受限角色。
+        // 不修这层：requestedRoles 里有 null 元素会让 repository 的 String.join 抛 NPE
+        // 走 Exception.class 兜底 500，而不是 400，并丢失"哪个字段错了"信息。
         for (String role : requestedRoles) {
+            if (role == null || role.isBlank()) {
+                throw new IllegalArgumentException("角色名不允许为空或仅含空白字符");
+            }
             if (RESTRICTED_ROLES.contains(role)) {
                 throw new IllegalArgumentException("不允许通过本接口授予角色: " + role);
+            }
+        }
+        // permissions 同理校验，避免 String.join 触发 NPE
+        Set<String> requestedPermissions = request.permissions() == null ? Set.of() : request.permissions();
+        for (String permission : requestedPermissions) {
+            if (permission == null || permission.isBlank()) {
+                throw new IllegalArgumentException("权限名不允许为空或仅含空白字符");
             }
         }
 
         UserAccount updatedAccount = userAccountRepository.updateAuthorization(
                 userId,
                 requestedRoles,
-                request.permissions()
+                requestedPermissions
         );
         return UserView.from(updatedAccount);
     }

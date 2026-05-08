@@ -60,8 +60,10 @@ public class AuthService {
                         passwordService.hash(request.password()));
                 log.info("已就地升级用户 {} 的密码哈希（legacy → bcrypt）", userAccount.username());
             } catch (Exception e) {
-                // lazy upgrade 失败不阻断登录——记日志即可，下次登录会再次尝试
-                log.warn("用户 {} 密码哈希升级失败：{}", userAccount.username(), e.getMessage());
+                // lazy upgrade 失败不阻断登录——记日志即可，下次登录会再次尝试。
+                // 必须把异常对象作为最后一个参数传给 SLF4J 才能打完整堆栈，
+                // 仅传 e.getMessage() 会丢失死锁/连接池/权限等根因排查线索。
+                log.warn("用户 {} 密码哈希升级失败", userAccount.username(), e);
             }
         }
 

@@ -86,12 +86,15 @@
   - `docker/init-db/init.sql`（同步 DDL）
   - `src/test/resources/test-schema.sql`（测试同步）
   - `usercenter/follows/FollowService`（SQL 调用方）
-- **测试**：`SecurityInvariantsTests#user_follows表存在且follow_unfollow能闭环`
+- **测试**：`SecurityInvariantsTests#user_follows表存在且字段可读写`
+  （不直接调 FollowService.follow() 端到端，因 FollowService 用 PG 专属
+  `ON CONFLICT (cols) DO NOTHING`，H2 PostgreSQL MODE 当前版本不识别——
+  改打 JdbcTemplate 直读直写表，验证 schema drift 这一根因）
 - **为什么**：FollowService 引用的 `user_follows(follower_id, followee_id, created_at)`
   之前在 schema.sql 与 init.sql 中都未定义，全新部署或新 Neon 数据库一访问
   `/api/user-center/follows/...` 就 `relation does not exist` 报 500。
-  这是 issue #25 之外的额外 schema drift。CI 测试存在表 + follow/unfollow 闭环
-  作为长期回归探测器。
+  这是 issue #25 之外的额外 schema drift。CI 测试存在表 + 字段可读写作为
+  长期回归探测器。
 - **历史**：2026-05-07 三方 CR 发现的 schema drift（与 issue #25 类同）。
 
 ---

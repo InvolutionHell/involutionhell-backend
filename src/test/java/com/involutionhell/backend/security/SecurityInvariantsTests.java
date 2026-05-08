@@ -290,23 +290,41 @@ class SecurityInvariantsTests extends AbstractWebIntegrationTest {
     // ============================================================
 
     /**
-     * INV-005a：docker-compose.yml 里 postgres 服务的 ports 段必须以 127.0.0.1 起头
-     *           或不存在（容器间走 docker network 即可）。
+     * INV-005a：docker-compose.yml 里 postgres 容器端口 5432 必须只绑 127.0.0.1。
      *
-     * 防止有人为了"本地连数据库方便"把端口改成 5432:5432 或 0.0.0.0:5432:5432
-     * —— 一旦上线就直接对外暴露 PostgreSQL 主端口，等同于公网开 5432 蜜罐。
+     * 攻击场景：把端口写成 "5432:5432" / "0.0.0.0:5432:5432" / "15432:5432"
+     * 等任何"非 127.0.0.1: 开头"的形式，宿主机就把容器 5432 暴露给公网。
+     *
+     * 检测策略：扫描所有 ports 段 mapping 行，凡是 host port 段不以 127.0.0.1:
+     * 起头且 container port 段为 5432 的，全判违规。覆盖：
+     *   - 引号 / 无引号
+     *   - host 改非 5432（如 15432）映射到容器 5432 仍暴露
+     *   - 0.0.0.0 / ::（IPv6 全绑）等显式绑全网
      */
     @Test
     void docker_compose里postgres端口必须绑127_0_0_1() throws Exception {
         Path composeFile = locateComposeFile();
         String content = Files.readString(composeFile);
 
-        // 简化版扫描：postgres ports 段后面紧跟的 mapping 行必须 127.0.0.1: 开头
-        Pattern unsafePattern = Pattern.compile(
-                "(?m)^\\s*-\\s*\"(0\\.0\\.0\\.0:|\\d+:)5432:5432\"");
-        Assertions.assertThat(unsafePattern.matcher(content).find())
-                .as("docker-compose.yml 检测到 postgres 端口暴露公网形式（如 \"5432:5432\" 或 \"0.0.0.0:5432:5432\"）")
-                .isFalse();
+        // (?m) 行模式；匹配所有 "- <hostpart>:5432" 形式的 ports mapping。
+        // 捕获组 1 是 hostpart（可能是 "127.0.0.1:5432"、"5432"、"0.0.0.0:5432" 等）。
+        Pattern portMapping = Pattern.compile(
+                "(?m)^\\s*-\\s*\"?([^\"\\s#]+):5432\"?\\s*(?:#.*)?$");
+        java.util.regex.Matcher m = portMapping.matcher(content);
+        java.util.List<String> violations = new java.util.ArrayList<>();
+        while (m.find()) {
+            String hostPart = m.group(1);
+            // 合规形式：以 "127.0.0.1:" 起头（如 "127.0.0.1:5432"）。
+            // 任何其他形式都不允许：纯端口号 "5432"、"0.0.0.0:..."、IPv6 "[::]:..."、
+            // "15432" 这种 host port 改了但容器仍是 5432 也算（仍暴露公网）。
+            if (!hostPart.startsWith("127.0.0.1:")) {
+                violations.add(m.group(0).trim());
+            }
+        }
+        Assertions.assertThat(violations)
+                .as("docker-compose.yml postgres 容器 5432 端口必须只绑 127.0.0.1；"
+                        + "检测到非 loopback 映射: %s", violations)
+                .isEmpty();
     }
 
     /**

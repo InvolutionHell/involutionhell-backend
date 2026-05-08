@@ -128,6 +128,79 @@ class AuthServiceTests {
                 .hasMessage("用户名或密码错误");
     }
 
+    /**
+     * INV-003 lazy upgrade：legacy SHA-256 hash 用户登录成功后，应被就地升级为 bcrypt。
+     */
+    @Test
+    void loginUpgradesLegacyHashAfterSuccessfulMatch() {
+        String legacyHash = "ad89b64d66caa8e30e5d5ce4a9763f4ecc205814c412175f3e2c50027471426d";
+        String newBcryptHash = "$2b$10$newbcryptsaltsaltsaltsaltsaltsaltsaltsaltsaltsaltsalts";
+        UserAccount account = enabledUser(1L, "alice", legacyHash);
+        when(userCenterService.findByUsername("alice")).thenReturn(Optional.of(account));
+        when(passwordService.matches("Alice@123", legacyHash)).thenReturn(true);
+        when(passwordService.isLegacyHash(legacyHash)).thenReturn(true);
+        when(passwordService.hash("Alice@123")).thenReturn(newBcryptHash);
+
+        try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
+            stpUtil.when(StpUtil::getTokenName).thenReturn("satoken");
+            stpUtil.when(StpUtil::getTokenValue).thenReturn("token-abc");
+
+            authService.login(new LoginRequest("alice", "Alice@123"));
+
+            // 关键：登录成功路径必须触发 lazy upgrade 写回
+            verify(userAccountRepository).updatePasswordHash(1L, newBcryptHash);
+        }
+    }
+
+    /**
+     * INV-003 lazy upgrade 容错：repository 写失败时不能阻断登录。
+     */
+    @Test
+    void loginStillSucceedsWhenLazyUpgradeWriteFails() {
+        String legacyHash = "ad89b64d66caa8e30e5d5ce4a9763f4ecc205814c412175f3e2c50027471426d";
+        UserAccount account = enabledUser(1L, "alice", legacyHash);
+        when(userCenterService.findByUsername("alice")).thenReturn(Optional.of(account));
+        when(passwordService.matches("Alice@123", legacyHash)).thenReturn(true);
+        when(passwordService.isLegacyHash(legacyHash)).thenReturn(true);
+        when(passwordService.hash("Alice@123")).thenReturn("$2b$10$newhash");
+        // 模拟 DB 抖动：updatePasswordHash 抛异常
+        org.mockito.Mockito.doThrow(new RuntimeException("simulated DB hiccup"))
+                .when(userAccountRepository).updatePasswordHash(any(), any());
+
+        try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
+            stpUtil.when(StpUtil::getTokenName).thenReturn("satoken");
+            stpUtil.when(StpUtil::getTokenValue).thenReturn("token-abc");
+
+            // 不阻断登录：仍返回有效 LoginResponse
+            LoginResponse response = authService.login(new LoginRequest("alice", "Alice@123"));
+            assertThat(response.tokenValue()).isEqualTo("token-abc");
+        }
+    }
+
+    /**
+     * INV-003 反向：bcrypt 用户登录路径不应该触发 lazy upgrade（已经是 bcrypt 了）。
+     */
+    @Test
+    void loginDoesNotUpgradeWhenHashIsAlreadyBcrypt() {
+        String bcryptHash = "$2b$10$alreadybcrypt$alreadybcrypt$alreadybcrypt$alreadybcryptxx";
+        UserAccount account = enabledUser(1L, "alice", bcryptHash);
+        when(userCenterService.findByUsername("alice")).thenReturn(Optional.of(account));
+        when(passwordService.matches("Alice@123", bcryptHash)).thenReturn(true);
+        when(passwordService.isLegacyHash(bcryptHash)).thenReturn(false);
+
+        try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
+            stpUtil.when(StpUtil::getTokenName).thenReturn("satoken");
+            stpUtil.when(StpUtil::getTokenValue).thenReturn("token-abc");
+
+            authService.login(new LoginRequest("alice", "Alice@123"));
+
+            // 不应该调 hash() 也不应该调 updatePasswordHash()
+            verify(passwordService, org.mockito.Mockito.never()).hash(any());
+            verify(userAccountRepository, org.mockito.Mockito.never())
+                    .updatePasswordHash(any(), any());
+        }
+    }
+
     // =============================================
     // loginByGithub() - GitHub OAuth 登录
     // =============================================
