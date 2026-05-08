@@ -3,7 +3,10 @@ package com.involutionhell.backend.chat.controller;
 import cn.dev33.satoken.stp.StpUtil;
 import com.involutionhell.backend.chat.dto.ChatTurnSaveRequest;
 import com.involutionhell.backend.chat.repository.ChatHistoryRepository;
+import com.involutionhell.backend.chat.repository.ChatOwner;
 import com.involutionhell.backend.common.api.ApiResponse;
+import com.involutionhell.backend.common.error.AccessDeniedBusinessException;
+import java.util.Optional;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -12,13 +15,16 @@ import org.springframework.web.bind.annotation.RestController;
 /**
  * /api/chat/sessions/save —— 保存一次 AI 对话回合（替代前端原 Prisma 直连）。
  *
- * 鉴权：匿名允许（SaTokenConfigure 里放行本路径）。原 Prisma 实现就是匿名也写，
- * chat.userId 允许 NULL；保持语义一致，避免前端切流量时未登录用户聊天历史丢失。
- * 如果登录了，用 sa-token 取 userId 关联；没登录就 NULL。
+ * 鉴权策略（INV-002）：匿名 + 登录都允许，但写入前必须做归属校验：
+ *   - chat 不存在：允许任意调用方创建（首次写入）
+ *   - chat 存在且 ownerId == null：允许匿名继续写、登录用户首次"接管"为 owner
+ *   - chat 存在且 ownerId != null：调用方必须登录且 userId 与 ownerId 完全匹配
  *
- * 为什么单独放一个 controller 而不是塞进 OpenAiController：OpenAiController 管
- * 流式代理，这里管持久化，职责不同；而且这条路径要对匿名开放，和 OpenAI 代理
- * 的登录要求不一致，拆开配 SaToken 拦截规则更清晰。
+ * 攻击场景：攻击者拿到他人 chatId（前端 log / share URL leak），匿名 POST
+ * 即可往 victim 历史里塞消息。COALESCE 语义不会改 ownerId，但 INSERT INTO
+ * "Message" 已经发生——这是数据完整性 + 内容污染问题。
+ *
+ * 见 SecurityInvariantsTests INV-002 三条断言。
  */
 @RestController
 @RequestMapping("/api/chat/sessions")
@@ -38,11 +44,22 @@ public class ChatHistoryController {
 
         // StpUtil.isLogin() 对匿名请求返回 false 而不是抛异常——配合 SaToken
         // 拦截器在 SaTokenConfigure 里 notMatch 放行本路径，才能真正对匿名生效。
-        Long userId = StpUtil.isLogin() ? StpUtil.getLoginIdAsLong() : null;
+        Long callerUserId = StpUtil.isLogin() ? StpUtil.getLoginIdAsLong() : null;
+
+        // INV-002：归属校验。已绑定 owner 的 chat 必须由 owner 本人写。
+        // 这一步必须在 saveTurn 之前——saveTurn 内部用 ON CONFLICT upsert，
+        // 一旦执行就会插入 Message 行，事后回滚得靠 @Transactional，宁可前置拦截。
+        Optional<ChatOwner> existing = chatHistoryRepository.lookupOwner(req.chatId());
+        if (existing.isPresent() && !existing.get().isAnonymous()) {
+            Long ownerId = existing.get().ownerId();
+            if (callerUserId == null || !callerUserId.equals(ownerId)) {
+                throw new AccessDeniedBusinessException("不允许写入他人的 chat 历史");
+            }
+        }
 
         chatHistoryRepository.saveTurn(
                 req.chatId(),
-                userId,
+                callerUserId,
                 req.userMessage(),
                 req.assistantMessage());
 

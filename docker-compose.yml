@@ -12,7 +12,7 @@ services:
       # 数据库连接（使用 PG* 变量，与 application.properties 保持一致）
       SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL:-jdbc:postgresql://postgres:5432/involution_hell}
       PGUSER: ${PGUSER:-involution}
-      PGPASSWORD: ${PGPASSWORD:-change_me}
+      PGPASSWORD: ${PGPASSWORD:?PGPASSWORD must be set in .env}
       SPRING_SQL_INIT_MODE: ${SPRING_SQL_INIT_MODE:-always}
       # GitHub OAuth2
       AUTH_GITHUB_ID: ${AUTH_GITHUB_ID:-}
@@ -67,11 +67,14 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-involution_hell}
       POSTGRES_USER: ${POSTGRES_USER:-involution}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
-    # 只 bind 到 loopback，不再暴露公网。
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+    # 只 bind 到 loopback，不再暴露公网（INV-005）。
     # Spring Boot / pgAdmin / 自动备份容器都在同 docker network，走容器名 postgres:5432 即可。
     # 历史上是 "5432:5432" 让 Vercel build 脚本远程查 doc_contributors 生成排行榜，
     # 现已改走后端 /api/public/leaderboard，DB 不再需要对外开放。
+    #
+    # 注意：禁止把这一行改回 "5432:5432" 或 "0.0.0.0:5432:5432"。
+    # 攻击面分析见 SECURITY.md / INV-005。
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
@@ -95,7 +98,7 @@ services:
     restart: unless-stopped
     environment:
       PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@involutionhell.com}
-      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-change_me}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:?PGADMIN_PASSWORD must be set in .env}
       # pgAdmin 保持 SERVER_MODE=False（desktop / single-user，无登录页）——
       # 关键前提：**外层 Caddy 做 forward_auth**，只有带合法 admin satoken
       # cookie 的请求才被代理到这里。直接对公网暴露 8082 绝对不行。
@@ -138,7 +141,7 @@ services:
       POSTGRES_HOST: postgres
       POSTGRES_DB: ${POSTGRES_DB:-involution_hell}
       POSTGRES_USER: ${POSTGRES_USER:-involution}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
       # -Fc 产出 custom 格式（.dump），pgAdmin 右键 Restore 直接一键恢复；
       # 镜像包装脚本默认会 gzip，这里必须显式设 BACKUP_SUFFIX=.dump 且不加 gzip
       # 选项，让镜像按 custom 格式直接落盘。

@@ -14,15 +14,16 @@ CREATE TABLE IF NOT EXISTS user_accounts (
 );
 
 -- 种子账号（与生产保持一致）逐行插入，H2 兼容写法
+-- 哈希格式：bcrypt(cost=10) —— INV-003 起点；明文与生产一致 (Admin@123456 等)
 MERGE INTO user_accounts (username, password_hash, display_name, enabled, roles, permissions)
     KEY (username)
-    VALUES ('admin', 'ad89b64d66caa8e30e5d5ce4a9763f4ecc205814c412175f3e2c50027471426d', 'Admin', TRUE, 'admin', 'user:profile:read,user:center:read,user:center:manage');
+    VALUES ('admin', '$2b$10$Bfnw8v.BsXeZVPbre94sJeokgEfKuCLsdH7ckJxzxn5nxirHJHmP.', 'Admin', TRUE, 'admin', 'user:profile:read,user:center:read,user:center:manage');
 MERGE INTO user_accounts (username, password_hash, display_name, enabled, roles, permissions)
     KEY (username)
-    VALUES ('alice', 'b02bb998ecc1616148b9b4ba0405dbd4c224acd1bac059d59f0a07b3b1a68400', 'Alice', TRUE, 'user', 'user:profile:read');
+    VALUES ('alice', '$2b$10$BmtVOmPK8Os/xreOTImsdec1fAA8Y9iTm1D823swYucSI2NDFdk.q', 'Alice', TRUE, 'user', 'user:profile:read');
 MERGE INTO user_accounts (username, password_hash, display_name, enabled, roles, permissions)
     KEY (username)
-    VALUES ('auditor', 'ccabaaba054fb98905b5b9ee47174f57cb6088e04b1526f08b872dc06eaa6bb9', 'Auditor', TRUE, 'auditor', 'user:profile:read,user:center:read');
+    VALUES ('auditor', '$2b$10$/1OfzhrA6CITrjJsDbzk.uMLq6cHa/iOP./wL2BAPo9t7QRq7Ca5W', 'Auditor', TRUE, 'auditor', 'user:profile:read,user:center:read');
 
 -- Events 相关表（测试用 H2 语法）。JSONB 用 VARCHAR 代替，与 user_accounts.preferences 的策略一致
 CREATE TABLE IF NOT EXISTS events (
@@ -41,6 +42,20 @@ CREATE TABLE IF NOT EXISTS events (
     created_at     TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at     TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+-- 关注关系（user_follows）—— 与 schema.sql 保持一致；H2 PostgreSQL MODE 接受
+CREATE TABLE IF NOT EXISTS user_follows (
+    follower_id BIGINT    NOT NULL,
+    followee_id BIGINT    NOT NULL,
+    created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (follower_id, followee_id),
+    FOREIGN KEY (follower_id) REFERENCES user_accounts(id) ON DELETE CASCADE,
+    FOREIGN KEY (followee_id) REFERENCES user_accounts(id) ON DELETE CASCADE
+);
+-- 与生产 schema 一致的"粉丝列表"二级索引；测试 schema 缺这个索引会让
+-- "索引被误删"这种 drift 逃过 CI（即便表本身存在）
+CREATE INDEX IF NOT EXISTS idx_user_follows_followee
+    ON user_follows(followee_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS event_interests (
     event_id   BIGINT      NOT NULL,
@@ -115,3 +130,9 @@ CREATE TABLE IF NOT EXISTS link_reports (
 MERGE INTO user_accounts (username, password_hash, display_name, enabled, roles, permissions)
     KEY (username)
     VALUES ('discord-bridge', '!', 'Discord Bridge', FALSE, 'bridge', '');
+
+-- 注：Chat / Message 表暂未在测试 schema 中建表，因为 H2 PostgreSQL MODE
+-- 不支持 JdbcChatHistoryRepository 用的 INSERT ... ON CONFLICT (id) DO UPDATE
+-- 语法。SecurityInvariantsTests 通过 @MockitoBean 替换 ChatHistoryRepository
+-- 测试归属校验（INV-002），不需要真表。如果未来要做 SQL 层集成测试，建议
+-- 引入 testcontainers PostgreSQL，而不是改 repository 兼容 H2。

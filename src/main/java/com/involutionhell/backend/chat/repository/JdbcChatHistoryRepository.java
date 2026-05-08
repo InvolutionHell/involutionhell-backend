@@ -1,6 +1,8 @@
 package com.involutionhell.backend.chat.repository;
 
 import java.sql.Types;
+import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
@@ -20,6 +22,26 @@ public class JdbcChatHistoryRepository implements ChatHistoryRepository {
 
     public JdbcChatHistoryRepository(JdbcTemplate jdbc) {
         this.jdbc = jdbc;
+    }
+
+    /**
+     * 查询 chatId 的归属信息。详细语义见接口文档。
+     *
+     * 实现要点：rs.getLong + rs.wasNull 才能区分"列值就是 0"和"列值是 NULL"，
+     * 直接 getObject 在 H2 / Postgres 之间行为不一致。
+     */
+    @Override
+    public Optional<ChatOwner> lookupOwner(String chatId) {
+        List<ChatOwner> result = jdbc.query(
+                """
+                SELECT "userId" FROM "Chat" WHERE id = ?
+                """,
+                (rs, rn) -> {
+                    long uid = rs.getLong("userId");
+                    return new ChatOwner(rs.wasNull() ? null : uid);
+                },
+                chatId);
+        return result.stream().findFirst();
     }
 
     /**

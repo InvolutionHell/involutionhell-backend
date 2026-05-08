@@ -48,6 +48,13 @@ public interface UserAccountRepository {
     UserAccount updateProfile(Long userId, String displayName, String avatarUrl, String email, Long githubId);
 
     /**
+     * 就地更新指定用户的 password_hash。
+     * 用于 AuthService 在登录成功后把 legacy SHA-256 哈希迁移到 bcrypt（lazy upgrade）。
+     * 不返回值——调用方不需要回读，写完即可继续。
+     */
+    void updatePasswordHash(Long userId, String passwordHash);
+
+    /**
      * 查询指定用户的偏好 Map，用户不存在时抛 IllegalArgumentException。
      */
     Map<String, Object> findPreferences(Long userId);

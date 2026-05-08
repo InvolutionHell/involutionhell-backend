@@ -10,9 +10,21 @@ import org.springframework.stereotype.Service;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 @Service
 public class UserCenterService {
+
+    /**
+     * 不允许通过 API 授予的角色黑名单。
+     *
+     * superadmin：管理其他 admin 的上位角色。必须走 DB 直接 UPDATE 授予，
+     * 防止 admin 通过本接口整集替换 roles 绕过 AdminUserController#setAdminRole 的 superadmin 保护。
+     * 未来如果还有"系统级"角色（system / bridge 等）需要锁定，加在这里即可。
+     *
+     * 安全不变量 INV-001 见 SECURITY.md / SecurityInvariantsTests。
+     */
+    private static final Set<String> RESTRICTED_ROLES = Set.of("superadmin");
 
     private final UserAccountRepository userAccountRepository;
 
@@ -93,12 +105,38 @@ public class UserCenterService {
 
     /**
      * 更新指定用户的角色与权限并返回最新视图。
+     *
+     * 安全不变量 INV-001：本接口不允许授予 RESTRICTED_ROLES 中的任何角色。
+     * 攻击场景：admin 自带 user:center:manage 权限可调本接口；
+     * 若不拦截，admin 可以整集替换 roles 自行提权为 superadmin，
+     * 绕过 AdminUserController#setAdminRole 的 superadmin 保护边界。
+     * 见 SecurityInvariantsTests#admin不能通过PUT_users_authorization给自己加superadmin角色。
      */
     public UserView updateAuthorization(Long userId, UserAuthorizationUpdateRequest request) {
+        Set<String> requestedRoles = request.roles() == null ? Set.of() : request.roles();
+        // 顺序校验：先拒非法元素（null / 空白），再拒受限角色。
+        // 不修这层：requestedRoles 里有 null 元素会让 repository 的 String.join 抛 NPE
+        // 走 Exception.class 兜底 500，而不是 400，并丢失"哪个字段错了"信息。
+        for (String role : requestedRoles) {
+            if (role == null || role.isBlank()) {
+                throw new IllegalArgumentException("角色名不允许为空或仅含空白字符");
+            }
+            if (RESTRICTED_ROLES.contains(role)) {
+                throw new IllegalArgumentException("不允许通过本接口授予角色: " + role);
+            }
+        }
+        // permissions 同理校验，避免 String.join 触发 NPE
+        Set<String> requestedPermissions = request.permissions() == null ? Set.of() : request.permissions();
+        for (String permission : requestedPermissions) {
+            if (permission == null || permission.isBlank()) {
+                throw new IllegalArgumentException("权限名不允许为空或仅含空白字符");
+            }
+        }
+
         UserAccount updatedAccount = userAccountRepository.updateAuthorization(
                 userId,
-                request.roles(),
-                request.permissions()
+                requestedRoles,
+                requestedPermissions
         );
         return UserView.from(updatedAccount);
     }
