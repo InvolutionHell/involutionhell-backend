@@ -80,6 +80,16 @@ public class GlobalExceptionHandler {
                 .body(ApiResponse.fail("拒绝访问: 缺少角色 [" + e.getRole() + "]"));
     }
 
+    /**
+     * 业务归属访问被拒——例如写入他人的 chat 历史、修改他人的资源。
+     * 与 Sa-Token 缺权限/缺角色不同，message 由抛出方决定，403 状态码。
+     */
+    @ExceptionHandler(AccessDeniedBusinessException.class)
+    public ResponseEntity<ApiResponse<Void>> handleAccessDeniedBusiness(AccessDeniedBusinessException e) {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                .body(ApiResponse.fail(e.getMessage()));
+    }
+
     // ==========================================
     // 业务与通用异常拦截
     // ==========================================

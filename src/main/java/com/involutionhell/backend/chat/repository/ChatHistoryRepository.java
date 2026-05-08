@@ -1,5 +1,7 @@
 package com.involutionhell.backend.chat.repository;
 
+import java.util.Optional;
+
 /**
  * AI 对话历史持久化接口。
  *
@@ -9,6 +11,16 @@ package com.involutionhell.backend.chat.repository;
  * "chat 有记录但消息丢了" 的错峰状态；拆成两个 repository 反而要在上层协调。
  */
 public interface ChatHistoryRepository {
+
+    /**
+     * 查询 chatId 对应行的归属。
+     *   - empty：chat 不存在
+     *   - present 且 ownerId == null：匿名 chat（保留给"匿名 → 登录迁移"语义）
+     *   - present 且 ownerId != null：已绑定到具体 user
+     *
+     * 用于 Controller 在写入前做 INV-002 归属校验。
+     */
+    Optional<ChatOwner> lookupOwner(String chatId);
 
     /**
      * 原子地持久化一个聊天回合：

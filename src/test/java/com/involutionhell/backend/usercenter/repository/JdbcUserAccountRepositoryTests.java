@@ -84,11 +84,13 @@ class JdbcUserAccountRepositoryTests {
     void findAllReturnsSeedUsersOrderedById() {
         List<UserAccount> all = repository.findAll();
 
-        // 种子数据：admin、alice、auditor
-        assertThat(all).hasSize(3);
+        // 种子数据：admin、alice、auditor、discord-bridge（PR #18 起加入；
+        // discord-bridge 是不可登录的桥接系统账号，password_hash='!'/enabled=FALSE）
+        assertThat(all).hasSize(4);
         assertThat(all.get(0).username()).isEqualTo("admin");
         assertThat(all.get(1).username()).isEqualTo("alice");
         assertThat(all.get(2).username()).isEqualTo("auditor");
+        assertThat(all.get(3).username()).isEqualTo("discord-bridge");
     }
 
     // =============================================

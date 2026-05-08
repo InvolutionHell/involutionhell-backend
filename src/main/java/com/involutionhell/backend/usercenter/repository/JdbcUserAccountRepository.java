@@ -140,6 +140,17 @@ public class JdbcUserAccountRepository implements UserAccountRepository {
     }
 
     @Override
+    public void updatePasswordHash(Long userId, String passwordHash) {
+        // 用于 AuthService 在登录成功后把 legacy SHA-256 哈希就地升级为 bcrypt（INV-003）
+        int updated = jdbc.update(
+                "UPDATE user_accounts SET password_hash = ? WHERE id = ?",
+                passwordHash, userId);
+        if (updated == 0) {
+            throw new IllegalArgumentException("用户不存在: " + userId);
+        }
+    }
+
+    @Override
     public Map<String, Object> findPreferences(Long userId) {
         List<String> results = jdbc.query(
                 "SELECT preferences FROM user_accounts WHERE id = ?",

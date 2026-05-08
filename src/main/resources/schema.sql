@@ -21,10 +21,14 @@ ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS preferences JSONB NOT NULL DE
 -- admin / Admin@123456
 -- alice / Alice@123456
 -- auditor / Audit@123456
+--
+-- 哈希格式：bcrypt(cost=10) —— INV-003 起点。老库里仍可能保留裸 SHA-256 哈希，
+-- 由 PasswordService.matches 兼容识别 + AuthService 在登录成功后做 lazy upgrade
+-- 就地迁移为 bcrypt。生产首次部署的新库直接使用 bcrypt seed，不再有 SHA-256 裸值。
 INSERT INTO user_accounts (username, password_hash, display_name, enabled, roles, permissions)
-VALUES ('admin',   'ad89b64d66caa8e30e5d5ce4a9763f4ecc205814c412175f3e2c50027471426d', 'Admin',   TRUE, 'admin',   'user:profile:read,user:center:read,user:center:manage'),
-       ('alice',   'b02bb998ecc1616148b9b4ba0405dbd4c224acd1bac059d59f0a07b3b1a68400', 'Alice',   TRUE, 'user',    'user:profile:read'),
-       ('auditor', 'ccabaaba054fb98905b5b9ee47174f57cb6088e04b1526f08b872dc06eaa6bb9', 'Auditor', TRUE, 'auditor', 'user:profile:read,user:center:read')
+VALUES ('admin',   '$2b$10$Bfnw8v.BsXeZVPbre94sJeokgEfKuCLsdH7ckJxzxn5nxirHJHmP.', 'Admin',   TRUE, 'admin',   'user:profile:read,user:center:read,user:center:manage'),
+       ('alice',   '$2b$10$BmtVOmPK8Os/xreOTImsdec1fAA8Y9iTm1D823swYucSI2NDFdk.q', 'Alice',   TRUE, 'user',    'user:profile:read'),
+       ('auditor', '$2b$10$/1OfzhrA6CITrjJsDbzk.uMLq6cHa/iOP./wL2BAPo9t7QRq7Ca5W', 'Auditor', TRUE, 'auditor', 'user:profile:read,user:center:read')
 ON CONFLICT (username) DO NOTHING;
 
 -- Discord 桥接系统账号（不可登录）。
@@ -61,6 +65,21 @@ ON CONFLICT (username) DO UPDATE SET
 --
 -- superadmin 语义：拥有全部 admin 权限 + 能管理其他人的 admin 角色。
 -- API 层禁止通过 /api/admin/users 接口授予或撤销 superadmin（防误操作锁死后台）。
+
+-- =============================================================================
+-- 关注关系（user_follows）
+-- =============================================================================
+-- FollowService 用 (follower_id, followee_id, created_at) 三列读写。
+-- 复合主键即唯一约束，配合 follow() 的 ON CONFLICT DO NOTHING 实现幂等。
+-- idx_user_follows_followee 给"查谁关注我（粉丝列表）"路径加倒序索引。
+CREATE TABLE IF NOT EXISTS user_follows (
+    follower_id BIGINT      NOT NULL REFERENCES user_accounts(id) ON DELETE CASCADE,
+    followee_id BIGINT      NOT NULL REFERENCES user_accounts(id) ON DELETE CASCADE,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (follower_id, followee_id)
+);
+CREATE INDEX IF NOT EXISTS idx_user_follows_followee
+    ON user_follows(followee_id, created_at DESC);
 
 -- =============================================================================
 -- Events（活动）相关表

@@ -109,6 +109,15 @@
 			<version>1.39.0</version>
 		</dependency>
 
+		<!-- spring-security-crypto: 单独 artifact，仅提供 BCryptPasswordEncoder 等
+		     PasswordEncoder 实现，不会引入完整 Spring Security 的 Filter chain。
+		     PasswordService 用它做 bcrypt 哈希（替代之前的裸 SHA-256），同时保留
+		     legacy SHA-256 dual-mode 兼容老用户登录（见 INV-003 / SECURITY.md）。 -->
+		<dependency>
+			<groupId>org.springframework.security</groupId>
+			<artifactId>spring-security-crypto</artifactId>
+		</dependency>
+
 		<!-- Google Analytics Data API (GA4) -->
 		<dependency>
 			<groupId>com.google.analytics</groupId>

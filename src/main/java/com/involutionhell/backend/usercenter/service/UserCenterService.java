@@ -10,9 +10,21 @@ import org.springframework.stereotype.Service;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 @Service
 public class UserCenterService {
+
+    /**
+     * 不允许通过 API 授予的角色黑名单。
+     *
+     * superadmin：管理其他 admin 的上位角色。必须走 DB 直接 UPDATE 授予，
+     * 防止 admin 通过本接口整集替换 roles 绕过 AdminUserController#setAdminRole 的 superadmin 保护。
+     * 未来如果还有"系统级"角色（system / bridge 等）需要锁定，加在这里即可。
+     *
+     * 安全不变量 INV-001 见 SECURITY.md / SecurityInvariantsTests。
+     */
+    private static final Set<String> RESTRICTED_ROLES = Set.of("superadmin");
 
     private final UserAccountRepository userAccountRepository;
 
@@ -93,11 +105,24 @@ public class UserCenterService {
 
     /**
      * 更新指定用户的角色与权限并返回最新视图。
+     *
+     * 安全不变量 INV-001：本接口不允许授予 RESTRICTED_ROLES 中的任何角色。
+     * 攻击场景：admin 自带 user:center:manage 权限可调本接口；
+     * 若不拦截，admin 可以整集替换 roles 自行提权为 superadmin，
+     * 绕过 AdminUserController#setAdminRole 的 superadmin 保护边界。
+     * 见 SecurityInvariantsTests#admin不能通过PUT_users_authorization给自己加superadmin角色。
      */
     public UserView updateAuthorization(Long userId, UserAuthorizationUpdateRequest request) {
+        Set<String> requestedRoles = request.roles() == null ? Set.of() : request.roles();
+        for (String role : requestedRoles) {
+            if (RESTRICTED_ROLES.contains(role)) {
+                throw new IllegalArgumentException("不允许通过本接口授予角色: " + role);
+            }
+        }
+
         UserAccount updatedAccount = userAccountRepository.updateAuthorization(
                 userId,
-                request.roles(),
+                requestedRoles,
                 request.permissions()
         );
         return UserView.from(updatedAccount);

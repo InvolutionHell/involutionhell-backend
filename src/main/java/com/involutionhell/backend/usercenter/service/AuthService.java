@@ -5,7 +5,10 @@ import com.involutionhell.backend.usercenter.dto.LoginRequest;
 import com.involutionhell.backend.usercenter.dto.LoginResponse;
 import com.involutionhell.backend.usercenter.dto.UserView;
 import com.involutionhell.backend.usercenter.model.UserAccount;
+import com.involutionhell.backend.usercenter.repository.UserAccountRepository;
 import me.zhyd.oauth.model.AuthUser;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.Set;
@@ -14,29 +17,52 @@ import java.util.UUID;
 @Service
 public class AuthService {
 
+    private static final Logger log = LoggerFactory.getLogger(AuthService.class);
+
     private final UserCenterService userCenterService;
     private final PasswordService passwordService;
+    private final UserAccountRepository userAccountRepository;
 
     /**
      * 创建认证服务并注入用户与密码服务。
      */
-    public AuthService(UserCenterService userCenterService, PasswordService passwordService) {
+    public AuthService(UserCenterService userCenterService,
+                       PasswordService passwordService,
+                       UserAccountRepository userAccountRepository) {
         this.userCenterService = userCenterService;
         this.passwordService = passwordService;
+        this.userAccountRepository = userAccountRepository;
     }
 
     /**
      * 校验登录请求 (传统账号密码登录)。
+     *
+     * INV-003 lazy upgrade：登录成功且原 hash 是 legacy（裸 SHA-256）格式时，
+     * 就地把 hash 升级为 bcrypt。失败不阻断登录——升级失败属可观测事件，
+     * 下次登录还会再试，不能让 DB 抖动把用户锁出去。
      */
     public LoginResponse login(LoginRequest request) {
         UserAccount userAccount = userCenterService.findByUsername(request.username())
                 .orElseThrow(() -> new IllegalArgumentException("用户名或密码错误"));
-        
+
         if (!userAccount.enabled()) {
             throw new IllegalStateException("账号已被禁用");
         }
         if (!passwordService.matches(request.password(), userAccount.passwordHash())) {
             throw new IllegalArgumentException("用户名或密码错误");
+        }
+
+        // INV-003 lazy upgrade：把老 SHA-256 hash 升级为 bcrypt（用同一明文重新 hash）
+        if (passwordService.isLegacyHash(userAccount.passwordHash())) {
+            try {
+                userAccountRepository.updatePasswordHash(
+                        userAccount.id(),
+                        passwordService.hash(request.password()));
+                log.info("已就地升级用户 {} 的密码哈希（legacy → bcrypt）", userAccount.username());
+            } catch (Exception e) {
+                // lazy upgrade 失败不阻断登录——记日志即可，下次登录会再次尝试
+                log.warn("用户 {} 密码哈希升级失败：{}", userAccount.username(), e.getMessage());
+            }
         }
 
         return executeLogin(userAccount);

@@ -15,11 +15,22 @@ CREATE TABLE IF NOT EXISTS user_accounts (
 -- admin / Admin@123456
 -- alice / Alice@123456
 -- auditor / Audit@123456
+-- 哈希格式：bcrypt(cost=10) —— INV-003 起点
 INSERT INTO user_accounts (username, password_hash, display_name, enabled, roles, permissions)
-VALUES ('admin',   'ad89b64d66caa8e30e5d5ce4a9763f4ecc205814c412175f3e2c50027471426d', 'Admin',   TRUE, 'admin',   'user:profile:read,user:center:read,user:center:manage'),
-       ('alice',   'b02bb998ecc1616148b9b4ba0405dbd4c224acd1bac059d59f0a07b3b1a68400', 'Alice',   TRUE, 'user',    'user:profile:read'),
-       ('auditor', 'ccabaaba054fb98905b5b9ee47174f57cb6088e04b1526f08b872dc06eaa6bb9', 'Auditor', TRUE, 'auditor', 'user:profile:read,user:center:read')
+VALUES ('admin',   '$2b$10$Bfnw8v.BsXeZVPbre94sJeokgEfKuCLsdH7ckJxzxn5nxirHJHmP.', 'Admin',   TRUE, 'admin',   'user:profile:read,user:center:read,user:center:manage'),
+       ('alice',   '$2b$10$BmtVOmPK8Os/xreOTImsdec1fAA8Y9iTm1D823swYucSI2NDFdk.q', 'Alice',   TRUE, 'user',    'user:profile:read'),
+       ('auditor', '$2b$10$/1OfzhrA6CITrjJsDbzk.uMLq6cHa/iOP./wL2BAPo9t7QRq7Ca5W', 'Auditor', TRUE, 'auditor', 'user:profile:read,user:center:read')
 ON CONFLICT (username) DO NOTHING;
+
+-- 关注关系（user_follows）—— 与 schema.sql 保持一致
+CREATE TABLE IF NOT EXISTS user_follows (
+    follower_id BIGINT      NOT NULL REFERENCES user_accounts(id) ON DELETE CASCADE,
+    followee_id BIGINT      NOT NULL REFERENCES user_accounts(id) ON DELETE CASCADE,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (follower_id, followee_id)
+);
+CREATE INDEX IF NOT EXISTS idx_user_follows_followee
+    ON user_follows(followee_id, created_at DESC);
 
 -- Prisma tables (frontend/prisma/schema.prisma)
 

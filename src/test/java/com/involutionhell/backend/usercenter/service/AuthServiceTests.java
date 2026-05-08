@@ -13,6 +13,7 @@ import com.involutionhell.backend.usercenter.dto.LoginRequest;
 import com.involutionhell.backend.usercenter.dto.LoginResponse;
 import com.involutionhell.backend.usercenter.dto.UserView;
 import com.involutionhell.backend.usercenter.model.UserAccount;
+import com.involutionhell.backend.usercenter.repository.UserAccountRepository;
 import java.util.Optional;
 import java.util.Set;
 import me.zhyd.oauth.model.AuthUser;
@@ -35,6 +36,9 @@ class AuthServiceTests {
 
     @Mock
     private PasswordService passwordService;
+
+    @Mock
+    private UserAccountRepository userAccountRepository;
 
     @InjectMocks
     private AuthService authService;

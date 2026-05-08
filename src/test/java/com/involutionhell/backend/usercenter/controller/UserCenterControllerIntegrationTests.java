@@ -43,10 +43,11 @@ class UserCenterControllerIntegrationTests extends AbstractWebIntegrationTest {
     void usersListReturnsAllUsersForAdmin() throws Exception {
         String token = loginAsAdmin();
 
+        // 种子 admin/alice/auditor/discord-bridge 四个（PR #18 起加 discord-bridge）
         mockMvc.perform(get("/users").header("satoken", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true))
-                .andExpect(jsonPath("$.data.length()").value(3));
+                .andExpect(jsonPath("$.data.length()").value(4));
     }
 
     // alice 只有 user:profile:read，没有 user:center:read，访问 /users 会被拦截
