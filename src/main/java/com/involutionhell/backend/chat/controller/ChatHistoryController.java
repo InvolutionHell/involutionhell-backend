@@ -24,6 +24,9 @@ import org.springframework.web.bind.annotation.RestController;
  * 即可往 victim 历史里塞消息。COALESCE 语义不会改 ownerId，但 INSERT INTO
  * "Message" 已经发生——这是数据完整性 + 内容污染问题。
  *
+ * 防御深度：controller 层前置校验（快速拦截）+ repository 层 SQL WHERE 子句
+ * 原子校验（fix #27 TOCTOU，消除 lookupOwner 与 saveTurn 之间的竞态窗口）。
+ *
  * 见 SecurityInvariantsTests INV-002 三条断言。
  */
 @RestController
@@ -49,6 +52,7 @@ public class ChatHistoryController {
         // INV-002：归属校验。已绑定 owner 的 chat 必须由 owner 本人写。
         // 这一步必须在 saveTurn 之前——saveTurn 内部用 ON CONFLICT upsert，
         // 一旦执行就会插入 Message 行，事后回滚得靠 @Transactional，宁可前置拦截。
+        // SQL WHERE 子句兜底 TOCTOU（fix #27）。
         Optional<ChatOwner> existing = chatHistoryRepository.lookupOwner(req.chatId());
         if (existing.isPresent() && !existing.get().isAnonymous()) {
             Long ownerId = existing.get().ownerId();
