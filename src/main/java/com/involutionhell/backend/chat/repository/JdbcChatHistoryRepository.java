@@ -1,5 +1,6 @@
 package com.involutionhell.backend.chat.repository;
 
+import com.involutionhell.backend.common.error.AccessDeniedBusinessException;
 import java.sql.Types;
 import java.util.List;
 import java.util.Optional;
@@ -53,17 +54,23 @@ public class JdbcChatHistoryRepository implements ChatHistoryRepository {
      * 第二次带着真实 userId 过来时应该把之前的 NULL 覆盖掉；但如果这次匿名、
      * 上次已经登录了，不能把 userId 擦掉——所以用 COALESCE(EXCLUDED.userId, "Chat"."userId")
      * 的语义：新值优先，新值为 NULL 时保留旧值。
+     *
+     * WHERE 子句（fix #27 TOCTOU）：归属校验在 SQL 层原子完成——ON CONFLICT
+     * 命中时，只有 owner 兼容（NULL 或相同 userId）才允许 UPDATE。不兼容时
+     * affected rows = 0，直接抛 AccessDeniedBusinessException，Message 不插入。
+     * 消除了 controller 层 lookupOwner 与 saveTurn 之间的竞态窗口。
      */
     @Override
     @Transactional
     public void saveTurn(String chatId, Long userId, String userMessage, String assistantMessage) {
-        jdbc.update(
+        int rows = jdbc.update(
                 """
                 INSERT INTO "Chat" (id, "userId", "createdAt", "updatedAt")
                 VALUES (?, ?, NOW(), NOW())
                 ON CONFLICT (id) DO UPDATE SET
                     "userId"    = COALESCE(EXCLUDED."userId", "Chat"."userId"),
                     "updatedAt" = NOW()
+                WHERE "Chat"."userId" IS NULL OR "Chat"."userId" = EXCLUDED."userId"
                 """,
                 ps -> {
                     ps.setString(1, chatId);
@@ -73,6 +80,10 @@ public class JdbcChatHistoryRepository implements ChatHistoryRepository {
                         ps.setInt(2, userId.intValue());
                     }
                 });
+
+        if (rows == 0) {
+            throw new AccessDeniedBusinessException("不允许写入他人的 chat 历史");
+        }
 
         if (userMessage != null && !userMessage.isBlank()) {
             insertMessage(chatId, "user", userMessage);
