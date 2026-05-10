@@ -109,7 +109,7 @@ docker compose up -d postgres redis
 ### 4. 启动后端服务
 按以下任一方式启动:
 
-**方式 1:命令行启动**
+**方式 1:macOS / Linux / WSL / Git Bash**
 
 ```bash
 set -a && . ./.env && set +a
@@ -118,7 +118,22 @@ set -a && . ./.env && set +a
 
 `set -a` 让后续读到的变量自动 export 为环境变量,`. ./.env` 加载文件,`set +a` 关闭自动 export。这样 `.env` 里的变量会被传递给后续启动的 Spring Boot 进程。
 
-**方式 2:IntelliJ IDEA 启动**
+> [!WARNING]
+> 如果你用 Windows 编辑器(Notepad、VSCode 默认配置)改过 `.env`,行尾可能是 CRLF,`. ./.env` 会把 `\r` 一起带进变量值,后续 JDBC 连接会因为 `PGHOST=localhost\r` 这类隐形回车报奇怪的连接错。先 `dos2unix .env`,或者把编辑器行尾改成 LF。
+
+**方式 2:Windows PowerShell**
+
+```powershell
+Get-Content .env | Where-Object { $_ -match '^[^#].+=' } | ForEach-Object {
+    $name, $value = $_ -split '=', 2
+    [Environment]::SetEnvironmentVariable($name.Trim(), $value.Trim())
+}
+./mvnw spring-boot:run
+```
+
+只在当前 PowerShell 进程内生效,关掉窗口就没了——这是预期行为(避免污染全局环境变量)。每次新开 PowerShell 都要重跑一次。
+
+**方式 3:IntelliJ IDEA(跨平台)**
 
 安装 [EnvFile](https://plugins.jetbrains.com/plugin/7861-envfile) 插件后,在 Run Configuration → EnvFile 标签页中启用并选择 `.env` 文件,点击 Run 即可启动。
 
