@@ -79,7 +79,7 @@ services:
       - "127.0.0.1:5432:5432"
     volumes:
       - ./docker/init-db:/docker-entrypoint-initdb.d
-      - involution-postgres-data:/var/lib/postgresql/data
+      - involution-postgres-data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-involution} -d ${POSTGRES_DB:-involution_hell}"]
       interval: 10s
