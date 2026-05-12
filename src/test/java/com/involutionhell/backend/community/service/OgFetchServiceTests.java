@@ -77,6 +77,35 @@ class OgFetchServiceTests {
             </html>
             """;
 
+    // ── 微信公众号"真实"HTML：head 没 og:image，封面在 inline script 的 msg_cdn_url ─
+    // 反映线上真实 case（DB 里 5/7 条公众号文章 og_cover 为 NULL 就是这种 HTML 结构）
+    private static final String WEIXIN_HTML_NO_OG_IMAGE = """
+            <html>
+            <head>
+              <meta property="og:title" content="DeepSeek-V4 预览版" />
+              <meta property="og:description" content="迈入百万上下文普惠时代" />
+              <meta property="og:site_name" content="量子位" />
+              <script>
+                var biz = "MzIzNjc1NzUzMw==";
+                var msg_cdn_url = "http://mmbiz.qpic.cn/sz_mmbiz_jpg/abc123/0?wx_fmt=jpeg";
+                var cdn_url_1_1 = "http://mmbiz.qpic.cn/sz_mmbiz_jpg/abc123/640";
+              </script>
+            </head>
+            <body></body>
+            </html>
+            """;
+
+    // ── 小红书"真实"HTML：og:image 是 http://，HTTPS 页面会被 mixed-content 拦 ──
+    private static final String XIAOHONGSHU_HTTP_OG = """
+            <html>
+            <head>
+              <meta property="og:title" content="小红书笔记" />
+              <meta property="og:image" content="http://sns-webpic-qc.xhscdn.com/202605/notes_pre_post/cover.jpg" />
+            </head>
+            <body></body>
+            </html>
+            """;
+
     // 测试里的 host 一律用公网 IP 字面量（1.1.1.1 = Cloudflare DNS），
     // 因为 OgFetchService 在发请求前会用 PrivateAddressGuard 解析 host，
     // 用 mp.weixin.qq.com 这种真实域名会真的查 DNS，离线 CI 直接挂。
@@ -141,6 +170,90 @@ class OgFetchServiceTests {
 
         assertThat(result.isSuccess()).isFalse();
         assertThat(result.errorMessage()).containsIgnoringCase("Connection refused");
+    }
+
+    @Test
+    void parseOg_weixinNoOgImage_fallsBackToMsgCdnUrl() {
+        // 公众号 head 没 og:image，应从 inline script 的 var msg_cdn_url 兜底
+        // 且 http:// 应被自动升级为 https://（mmbiz.qpic.cn 支持 https）
+        OgFetchService service = new OgFetchService(
+                stubHttpClient(200, WEIXIN_HTML_NO_OG_IMAGE), NOOP_NORMALIZER);
+        OgFetchResult result = service.parseOg(WEIXIN_HTML_NO_OG_IMAGE, "https://mp.weixin.qq.com/s/abc");
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.ogTitle()).isEqualTo("DeepSeek-V4 预览版");
+        // msg_cdn_url 优先于 cdn_url_1_1，且协议升级到 https
+        assertThat(result.ogCover()).isEqualTo("https://mmbiz.qpic.cn/sz_mmbiz_jpg/abc123/0?wx_fmt=jpeg");
+    }
+
+    @Test
+    void parseOg_httpOgImage_upgradesToHttps() {
+        // og:image 是 http:// 时应升级为 https://，否则浏览器 mixed-content 会拦
+        OgFetchService service = new OgFetchService(
+                stubHttpClient(200, XIAOHONGSHU_HTTP_OG), NOOP_NORMALIZER);
+        OgFetchResult result = service.parseOg(XIAOHONGSHU_HTTP_OG, "https://www.xiaohongshu.com/explore/abc");
+
+        assertThat(result.ogCover()).isEqualTo(
+                "https://sns-webpic-qc.xhscdn.com/202605/notes_pre_post/cover.jpg");
+    }
+
+    @Test
+    void upgradeMediaProtocol_handlesCaseAndIdempotency() {
+        // http:// → https://
+        assertThat(OgFetchService.upgradeMediaProtocol("http://a.com/x.jpg"))
+                .isEqualTo("https://a.com/x.jpg");
+        // HTTP:// 大小写不敏感
+        assertThat(OgFetchService.upgradeMediaProtocol("HTTP://a.com/x.jpg"))
+                .isEqualTo("https://a.com/x.jpg");
+        // 已是 https 不动
+        assertThat(OgFetchService.upgradeMediaProtocol("https://a.com/x.jpg"))
+                .isEqualTo("https://a.com/x.jpg");
+        // null / empty 原样
+        assertThat(OgFetchService.upgradeMediaProtocol(null)).isNull();
+        assertThat(OgFetchService.upgradeMediaProtocol("")).isEqualTo("");
+    }
+
+    @Test
+    void findWeixinCover_picksFirstMatchAndIgnoresOtherVars() {
+        String html = """
+                <script>
+                  var biz = "foo";
+                  var msg_cdn_url = "http://mmbiz.qpic.cn/a.jpg";
+                  var msg_cdn_url_backup = "http://other.com/b.jpg";
+                </script>
+                """;
+        // 命中 msg_cdn_url 即返回；msg_cdn_url_backup 不在白名单不命中
+        assertThat(OgFetchService.findWeixinCover(html)).isEqualTo("http://mmbiz.qpic.cn/a.jpg");
+        // 不带 var 前缀的不命中（防止误抓页面里随便出现的 url 字符串）
+        assertThat(OgFetchService.findWeixinCover("msg_cdn_url = 'http://x.com/y'")).isNull();
+        // 内容必须是 http(s)://，杜绝 javascript: 偷换
+        assertThat(OgFetchService.findWeixinCover("var msg_cdn_url = \"javascript:alert(1)\"")).isNull();
+        assertThat(OgFetchService.findWeixinCover(null)).isNull();
+        assertThat(OgFetchService.findWeixinCover("")).isNull();
+    }
+
+    @Test
+    void findWeixinCover_priorityIndependentOfDocumentOrder() {
+        // 即便 cdn_url_1_1 在 HTML 中先出现，也必须返回 msg_cdn_url ——
+        // 修了原 alternation 正则按文档顺序选错变量的 bug（Copilot CR PR#33）
+        String html = """
+                <script>
+                  var cdn_url_1_1 = "https://mmbiz.qpic.cn/lowpri.jpg";
+                  var msg_cdn_url = "https://mmbiz.qpic.cn/hipri.jpg";
+                </script>
+                """;
+        assertThat(OgFetchService.findWeixinCover(html))
+                .isEqualTo("https://mmbiz.qpic.cn/hipri.jpg");
+
+        // 只有低优先级变量时回退到它
+        String onlyBackup = "var cdn_url_1_1 = \"https://mmbiz.qpic.cn/only.jpg\"";
+        assertThat(OgFetchService.findWeixinCover(onlyBackup))
+                .isEqualTo("https://mmbiz.qpic.cn/only.jpg");
+
+        // msg_cover_url 是最低优先级（极少数模板）
+        String onlyCover = "var msg_cover_url = \"https://mmbiz.qpic.cn/c.jpg\"";
+        assertThat(OgFetchService.findWeixinCover(onlyCover))
+                .isEqualTo("https://mmbiz.qpic.cn/c.jpg");
     }
 
     @Test

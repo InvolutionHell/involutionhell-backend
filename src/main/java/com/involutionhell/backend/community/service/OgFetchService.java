@@ -21,6 +21,8 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Open Graph 元数据抓取服务（M2）。
@@ -102,9 +104,13 @@ public class OgFetchService {
     static final int MAX_REDIRECTS = 3;
 
     /**
-     * 响应体读取上限（8 MB）。OG meta 全在 {@code <head>} 里，理论上几 KB 够用，
-     * 但部分站点（如微信公众号）会在 head 之前塞 megabyte 量级的 inline base64
-     * 图片 + 内联 CSS。8MB 覆盖目前已知所有"正常但臃肿"的站点。
+     * 响应体读取上限（16 MB）。OG meta 全在 {@code <head>} 里，理论上几 KB 够用，
+     * 但部分站点（尤其微信公众号 mp.weixin.qq.com）会在 head 之前塞 megabyte 量级
+     * 的 inline base64 logo + 内联 CSS + 大段编辑器初始化 JSON。
+     *
+     * 历史：原 8MB，线上 id=20 那条微信文章触发了 "response body exceeded max size"
+     * —— head 还没读到 inline base64 资源就把上限吃满了。提到 16MB 覆盖目前已知
+     * 所有"正常但臃肿"的站点，再大就走图片代理（长期方案）兜底。
      *
      * 真正的优化是 {@link #HEAD_END_MARKER} 早停 —— 流式扫描遇到 {@code </head>}
      * 立即停读，绝大多数站点只读几十 KB 就够。这个上限只是无限流防御兜底。
@@ -112,7 +118,7 @@ public class OgFetchService {
      * 之所以要在应用层兜底限流：JDK {@code BodyHandlers.ofString()} 本身
      * 没有 size 限制，配上 10 秒 timeout 仍然可能被攻击者的无限流撑爆堆。
      */
-    static final int MAX_BODY_BYTES = 8 * 1024 * 1024;
+    static final int MAX_BODY_BYTES = 16 * 1024 * 1024;
 
     private final HttpClient httpClient;
     private final UrlNormalizer urlNormalizer;
@@ -441,10 +447,44 @@ public class OgFetchService {
     }
 
     /**
+     * 微信公众号封面图正则（每个变量名一个，按优先级独立匹配）。
+     * <p>
+     * 公众号文章 head 里**没有** {@code <meta property="og:image">}，封面 URL 埋在
+     * {@code <script>} 里的 JS 变量：
+     * <pre>
+     *   var msg_cdn_url = "http://mmbiz.qpic.cn/sz_mmbiz_jpg/xxxxx/0?wx_fmt=jpeg";
+     *   var cdn_url_1_1 = "http://mmbiz.qpic.cn/.../640";  // 备用
+     *   var msg_cover_url = "...";                          // 极少数模板
+     * </pre>
+     * <p>
+     * 历史踩坑：原来一条 alternation 正则 + {@code Matcher#find()} 只能返回 HTML
+     * 中**最先出现**的变量，而 WeChat 模板偶尔把 cdn_url_1_1 排在 msg_cdn_url 之前，
+     * 这种情况下旧实现会拿到低优先级变量。改成三条独立正则，按 array 顺序依次扫，
+     * 第一条命中就返回，确保优先级和注释一致。
+     * <p>
+     * 安全：内容必须以 http(s):// 开头，杜绝 javascript: / data: 等被偷换的可能。
+     */
+    private static final Pattern[] WEIXIN_COVER_PATTERNS = {
+            compileVarPattern("msg_cdn_url"),
+            compileVarPattern("cdn_url_1_1"),
+            compileVarPattern("msg_cover_url"),
+    };
+
+    private static Pattern compileVarPattern(String varName) {
+        return Pattern.compile(
+                "var\\s+" + varName + "\\s*=\\s*[\"'](https?://[^\"'\\s]+)[\"']",
+                Pattern.CASE_INSENSITIVE);
+    }
+
+    /**
      * 用 Jsoup 解析 HTML，提取 Open Graph meta 标签。
      *
-     * 优先取 og: 命名空间的标准标签；
-     * og:image 找不到时退而求其次取 twitter:image（不少平台两者都填了）。
+     * 封面查找顺序：
+     *   1. {@code <meta property="og:image">}（标准 OG）
+     *   2. {@code <meta name="twitter:image">}（部分平台只填 Twitter Card）
+     *   3. WeChat fallback：扫 {@code var msg_cdn_url = "..."} 一类 JS 变量
+     *      （公众号 head 里没有 og:image，封面图全埋在 inline script 里）
+     *   4. 最后做 http -> https 升级，避免在 HTTPS 页面上被 mixed-content 拦截
      */
     OgFetchResult parseOg(String html, String baseUrl) {
         Document doc = Jsoup.parse(html, baseUrl);
@@ -454,10 +494,21 @@ public class OgFetchService {
         String cover = metaContent(doc, "og:image");
         String siteName = metaContent(doc, "og:site_name");
 
-        // 封面降级：部分平台只填 twitter:image
+        // 封面降级 1：部分平台只填 twitter:image
         if (cover == null) {
             cover = metaContent(doc, "twitter:image");
         }
+
+        // 封面降级 2：微信公众号专项 —— 公众号 head 没 og:image，得扫 JS 变量
+        // 不限定 host：少数自建站点（如转载公众号文章的内容农场）也保留了这些
+        // 变量名，多兜一手没坏处。正则强约束开头必须是 http(s):// 防 XSS。
+        if (cover == null) {
+            cover = findWeixinCover(html);
+        }
+
+        // 统一升级 http -> https：xhscdn / mmbiz / pic.zhimg 等主流图床都支持 https，
+        // 留 http 会被浏览器 mixed-content policy 直接拦掉
+        cover = upgradeMediaProtocol(cover);
 
         // 标题降级：og:title 没有时取 <title> 标签
         if (title == null) {
@@ -467,8 +518,46 @@ public class OgFetchService {
             }
         }
 
-        log.debug("og-fetch 解析完成: title={} siteName={}", title, siteName);
+        log.debug("og-fetch 解析完成: title={} siteName={} hasCover={}",
+                title, siteName, cover != null);
         return new OgFetchResult(title, description, cover, siteName, null);
+    }
+
+    /**
+     * 微信公众号封面提取：按 {@link #WEIXIN_COVER_PATTERNS} 数组顺序依次扫，
+     * 第一条命中的变量即返回；都没命中返回 null。
+     * <p>
+     * 优先级靠数组顺序而非单条 alternation 正则，避免 {@code Matcher#find()}
+     * 返回 HTML 文档顺序里最早出现的变量（与注释声明的优先级不一致）。
+     */
+    static String findWeixinCover(String html) {
+        if (html == null || html.isEmpty()) return null;
+        for (Pattern p : WEIXIN_COVER_PATTERNS) {
+            Matcher m = p.matcher(html);
+            if (m.find()) {
+                return m.group(1).trim();
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 把媒体 URL 的 http:// 升级为 https://。
+     * <p>
+     * 触发场景：小红书 og:image 值是 {@code http://sns-webpic-qc.xhscdn.com/...}，
+     * 微信 msg_cdn_url 是 {@code http://mmbiz.qpic.cn/...}。浏览器在 HTTPS 页面
+     * 加载这些资源会被 mixed-content policy 拦截。三大主流图床（xhscdn / mmbiz /
+     * pic.zhimg）都同时支持 https，盲升级安全。
+     * <p>
+     * 不动协议相对 URL（{@code //example.com/x.jpg}）和已是 https 的 URL。
+     * 非 http/https 协议（如 data:、ftp:）原样返回，由上层的 sanitizeMediaUrl 处理。
+     */
+    static String upgradeMediaProtocol(String url) {
+        if (url == null || url.isEmpty()) return url;
+        if (url.regionMatches(true, 0, "http://", 0, 7)) {
+            return "https://" + url.substring(7);
+        }
+        return url;
     }
 
     /**
