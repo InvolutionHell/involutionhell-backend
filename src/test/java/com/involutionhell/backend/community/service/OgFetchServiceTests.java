@@ -233,6 +233,30 @@ class OgFetchServiceTests {
     }
 
     @Test
+    void findWeixinCover_priorityIndependentOfDocumentOrder() {
+        // 即便 cdn_url_1_1 在 HTML 中先出现，也必须返回 msg_cdn_url ——
+        // 修了原 alternation 正则按文档顺序选错变量的 bug（Copilot CR PR#33）
+        String html = """
+                <script>
+                  var cdn_url_1_1 = "https://mmbiz.qpic.cn/lowpri.jpg";
+                  var msg_cdn_url = "https://mmbiz.qpic.cn/hipri.jpg";
+                </script>
+                """;
+        assertThat(OgFetchService.findWeixinCover(html))
+                .isEqualTo("https://mmbiz.qpic.cn/hipri.jpg");
+
+        // 只有低优先级变量时回退到它
+        String onlyBackup = "var cdn_url_1_1 = \"https://mmbiz.qpic.cn/only.jpg\"";
+        assertThat(OgFetchService.findWeixinCover(onlyBackup))
+                .isEqualTo("https://mmbiz.qpic.cn/only.jpg");
+
+        // msg_cover_url 是最低优先级（极少数模板）
+        String onlyCover = "var msg_cover_url = \"https://mmbiz.qpic.cn/c.jpg\"";
+        assertThat(OgFetchService.findWeixinCover(onlyCover))
+                .isEqualTo("https://mmbiz.qpic.cn/c.jpg");
+    }
+
+    @Test
     void parseOg_missingAllOgTags_fallsBackToTitleTag() {
         // 没有任何 og: 标签时，标题从 <title> 降级获取
         OgFetchService service = new OgFetchService(stubHttpClient(200, ""), NOOP_NORMALIZER);

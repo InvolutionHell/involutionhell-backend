@@ -447,21 +447,34 @@ public class OgFetchService {
     }
 
     /**
-     * 微信公众号封面图正则。公众号文章 head 里**没有** {@code <meta property="og:image">}，
-     * 封面 URL 埋在 {@code <script>} 里的 JS 变量：
+     * 微信公众号封面图正则（每个变量名一个，按优先级独立匹配）。
+     * <p>
+     * 公众号文章 head 里**没有** {@code <meta property="og:image">}，封面 URL 埋在
+     * {@code <script>} 里的 JS 变量：
      * <pre>
      *   var msg_cdn_url = "http://mmbiz.qpic.cn/sz_mmbiz_jpg/xxxxx/0?wx_fmt=jpeg";
      *   var cdn_url_1_1 = "http://mmbiz.qpic.cn/.../640";  // 备用
      *   var msg_cover_url = "...";                          // 极少数模板
      * </pre>
-     * 三个变量按优先级依次匹配，第一个命中就返回。值常以 http:// 开头，由
-     * {@link #upgradeMediaProtocol} 统一升级到 https。
-     *
+     * <p>
+     * 历史踩坑：原来一条 alternation 正则 + {@code Matcher#find()} 只能返回 HTML
+     * 中**最先出现**的变量，而 WeChat 模板偶尔把 cdn_url_1_1 排在 msg_cdn_url 之前，
+     * 这种情况下旧实现会拿到低优先级变量。改成三条独立正则，按 array 顺序依次扫，
+     * 第一条命中就返回，确保优先级和注释一致。
+     * <p>
      * 安全：内容必须以 http(s):// 开头，杜绝 javascript: / data: 等被偷换的可能。
      */
-    private static final Pattern WEIXIN_COVER_PATTERN = Pattern.compile(
-            "var\\s+(?:msg_cdn_url|cdn_url_1_1|msg_cover_url)\\s*=\\s*[\"'](https?://[^\"'\\s]+)[\"']",
-            Pattern.CASE_INSENSITIVE);
+    private static final Pattern[] WEIXIN_COVER_PATTERNS = {
+            compileVarPattern("msg_cdn_url"),
+            compileVarPattern("cdn_url_1_1"),
+            compileVarPattern("msg_cover_url"),
+    };
+
+    private static Pattern compileVarPattern(String varName) {
+        return Pattern.compile(
+                "var\\s+" + varName + "\\s*=\\s*[\"'](https?://[^\"'\\s]+)[\"']",
+                Pattern.CASE_INSENSITIVE);
+    }
 
     /**
      * 用 Jsoup 解析 HTML，提取 Open Graph meta 标签。
@@ -511,17 +524,19 @@ public class OgFetchService {
     }
 
     /**
-     * 微信公众号封面提取：扫 inline script 里的 msg_cdn_url / cdn_url_1_1 等变量。
-     * 找不到返回 null（让调用方进入下一级 fallback 或显示占位）。
-     *
-     * 注：理论上 head 早停应该把 inline script 也一起读到（公众号封面 JS 一般在
-     * head 内）；万一 script 在 body 才出现，下次再补 body 扫描。
+     * 微信公众号封面提取：按 {@link #WEIXIN_COVER_PATTERNS} 数组顺序依次扫，
+     * 第一条命中的变量即返回；都没命中返回 null。
+     * <p>
+     * 优先级靠数组顺序而非单条 alternation 正则，避免 {@code Matcher#find()}
+     * 返回 HTML 文档顺序里最早出现的变量（与注释声明的优先级不一致）。
      */
     static String findWeixinCover(String html) {
         if (html == null || html.isEmpty()) return null;
-        Matcher m = WEIXIN_COVER_PATTERN.matcher(html);
-        if (m.find()) {
-            return m.group(1).trim();
+        for (Pattern p : WEIXIN_COVER_PATTERNS) {
+            Matcher m = p.matcher(html);
+            if (m.find()) {
+                return m.group(1).trim();
+            }
         }
         return null;
     }
