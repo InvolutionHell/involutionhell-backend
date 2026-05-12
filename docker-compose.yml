@@ -38,6 +38,12 @@ services:
       # GitHub REST API token：DocHistoryService 调 /repos/.../commits 需要，
       # 匿名限流 60/hour，带 token 5000/hour。未设置时 service 仍可用，只是容易被限流。
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      # Sentry 错误上报：DSN 由生产 .env 提供；release 由 CI build-arg 经 Dockerfile
+      # 注入；environment 默认 production（生产 .env 不必显式覆盖）。
+      # DSN 留空时 SDK 自动 disable，不阻断启动——可观测性是可选组件，遗漏不该挡部署。
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
+      SENTRY_RELEASE: ${SENTRY_RELEASE:-}
     ports:
       - "8080:8080"
     volumes:

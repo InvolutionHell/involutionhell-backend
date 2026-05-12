@@ -109,6 +109,24 @@
 			<version>1.39.0</version>
 		</dependency>
 
+		<!-- Sentry: 错误上报。零侵入接入——starter 自动注册 SentryAppender 到
+		     logback ROOT logger，捕获 ERROR 级日志（含 GlobalExceptionHandler.handleUnexpected
+		     里的完整 stack trace），自动注入 traceId 到 MDC，自动跟前端 sentry-trace
+		     header 串起来形成端到端 distributed trace。
+		     artifact 选择：
+		       - sentry-spring-boot-4-starter   ← 我们这个（Spring Boot 4 / Spring 7）
+		       - sentry-spring-boot-starter-jakarta  Spring Boot 3.x（不兼容，启动期会抛
+		         "Incompatible Spring Boot Version" 警告 + ApplicationContext 失败）
+		       - sentry-spring-boot-starter     Spring Boot 2.x（javax）
+		     版本 8.41.0：8.26.0+ 起官方支持 Spring Boot 4 GA。
+		     DSN / release / environment 通过 application.properties 占位符从 env 注入；
+		     env 缺失时 SDK 自动 disable，本地开发 / CI 跑 ./mvnw test 不会乱报。 -->
+		<dependency>
+			<groupId>io.sentry</groupId>
+			<artifactId>sentry-spring-boot-4-starter</artifactId>
+			<version>8.41.0</version>
+		</dependency>
+
 		<!-- spring-security-crypto: 单独 artifact，仅提供 BCryptPasswordEncoder 等
 		     PasswordEncoder 实现，不会引入完整 Spring Security 的 Filter chain。
 		     PasswordService 用它做 bcrypt 哈希（替代之前的裸 SHA-256），同时保留

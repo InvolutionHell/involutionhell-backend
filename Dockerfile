@@ -24,6 +24,15 @@ FROM eclipse-temurin:25-jre
 RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+
+# Sentry release 标签：CI 在 docker build 时通过 --build-arg GIT_COMMIT=$(git rev-parse --short HEAD)
+# 注入；本地手动 docker build 不传时为空字符串，SDK 退化到无 release 标签。
+# 必须在第二阶段（jre 运行镜像）声明，第一阶段是 build-only 不需要这个 env。
+# ENV 写在 ENTRYPOINT 之前 → 容器启动时 Spring Boot 能从 environment 读到，
+# application.properties 里的 ${SENTRY_RELEASE:} 占位会被替换为这个 SHA。
+ARG GIT_COMMIT=""
+ENV SENTRY_RELEASE=$GIT_COMMIT
+
 # Spring Boot 默认产物 backend-*.jar，固定重命名为 backend.jar 方便 ENTRYPOINT
 COPY --from=build /app/target/backend-*.jar ./backend.jar
 

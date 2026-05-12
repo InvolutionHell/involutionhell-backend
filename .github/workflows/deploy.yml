@@ -32,14 +32,20 @@ jobs:
           key: ${{ secrets.SERVER_SSH_KEY }}
           # 命令超时设长一点，Native Image 编译需要时间
           command_timeout: 30m
+          # github.sha 在 actions context 里展开为完整 40 字符 SHA；
+          # bash 子串语法 ${VAR:0:7} 截前 7 位，与 Sentry 习惯一致
           script: |
             cd /home/ubuntu/involution-hell
 
             # 保存当前镜像为回滚备份（首次部署时镜像可能不存在，忽略错误）
             docker tag involutionhell-backend:latest involutionhell-backend:rollback 2>/dev/null || true
 
-            # 构建新镜像（失败则整个 workflow 标红，旧容器不受影响）
-            docker build -t involutionhell-backend:latest .
+            # 构建新镜像（失败则整个 workflow 标红，旧容器不受影响）。
+            # --build-arg GIT_COMMIT 注入 git short SHA 作为 SENTRY_RELEASE，
+            # 让 Sentry issue 后台能直接看出"这个 bug 是哪次部署引入的"。
+            GIT_COMMIT_FULL="${{ github.sha }}"
+            GIT_COMMIT_SHORT="${GIT_COMMIT_FULL:0:7}"
+            docker build --build-arg GIT_COMMIT="$GIT_COMMIT_SHORT" -t involutionhell-backend:latest .
 
             # 用新镜像重启服务。
             # --force-recreate 是必须的：compose 看 image 名（始终是 :latest）没变就不会重建容器，
