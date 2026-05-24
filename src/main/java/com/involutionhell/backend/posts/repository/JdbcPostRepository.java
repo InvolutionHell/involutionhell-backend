@@ -1,5 +1,6 @@
 package com.involutionhell.backend.posts.repository;
 
+import com.involutionhell.backend.posts.dto.PostSummaryView;
 import com.involutionhell.backend.posts.model.Post;
 import com.involutionhell.backend.posts.model.PostStatus;
 import com.involutionhell.backend.posts.model.PostVisibility;
@@ -115,14 +116,28 @@ public class JdbcPostRepository implements PostRepository {
     }
 
     @Override
-    public List<Post> findFeed(int limit, int offset) {
-        // 只返回已发布且公开的文章，按最新排序
-        return jdbc.query(
-                "SELECT * FROM posts WHERE status = ? AND visibility = ? "
-                        + "ORDER BY created_at DESC LIMIT ? OFFSET ?",
-                rowMapper,
-                PostStatus.PUBLISHED, PostVisibility.PUBLIC,
-                limit, offset);
+    public List<PostSummaryView> findFeedWithAuthor(int limit, int offset) {
+        // JOIN user_accounts 一次拿回作者字段，消除 service 层 N+1 查询
+        String sql = "SELECT p.id, p.author_id, p.slug, p.title, p.description, p.tags, "
+                + "p.cover_url, p.visibility, p.status, p.promoted_pr_url, "
+                + "p.view_count, p.created_at, p.updated_at, "
+                + "u.username AS author_username, "
+                + "u.display_name AS author_display_name, "
+                + "u.avatar_url AS author_avatar_url "
+                + "FROM posts p "
+                + "LEFT JOIN user_accounts u ON u.id = p.author_id "
+                + "WHERE p.status = ? AND p.visibility = ? "
+                + "ORDER BY p.created_at DESC LIMIT ? OFFSET ?";
+        return jdbc.query(sql, (rs, rowNum) -> {
+            Post p = rowMapper.mapRow(rs, rowNum);
+            String username    = rs.getString("author_username");
+            String displayName = rs.getString("author_display_name");
+            String avatarUrl   = rs.getString("author_avatar_url");
+            return PostSummaryView.from(p,
+                    username    != null ? username    : "unknown",
+                    displayName != null ? displayName : "",
+                    avatarUrl);
+        }, PostStatus.PUBLISHED, PostVisibility.PUBLIC, limit, offset);
     }
 
     @Override
@@ -136,9 +151,10 @@ public class JdbcPostRepository implements PostRepository {
     }
 
     @Override
-    public void update(Long id, String slug, String title, String description,
-                       String tagsJson, String contentMd, String coverUrl) {
-        jdbc.update(conn -> {
+    public int update(Long id, String slug, String title, String description,
+                      String tagsJson, String contentMd, String coverUrl) {
+        // 返回受影响行数；0 表示 id 不存在（被并发删除）
+        return jdbc.update(conn -> {
             PreparedStatement ps = conn.prepareStatement(
                     "UPDATE posts SET slug = ?, title = ?, description = ?, tags = ?, "
                             + "content_md = ?, cover_url = ?, updated_at = NOW() WHERE id = ?");

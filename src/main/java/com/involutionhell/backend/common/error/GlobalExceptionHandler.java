@@ -90,6 +90,16 @@ public class GlobalExceptionHandler {
                 .body(ApiResponse.fail(e.getMessage()));
     }
 
+    /**
+     * 业务资源不存在（404）。
+     * 区别于 IllegalArgumentException（400 参数错误）：资源找不到是 404，不是请求格式问题。
+     */
+    @ExceptionHandler(ResourceNotFoundException.class)
+    public ResponseEntity<ApiResponse<Void>> handleResourceNotFound(ResourceNotFoundException e) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(ApiResponse.fail(e.getMessage()));
+    }
+
     // ==========================================
     // 业务与通用异常拦截
     // ==========================================

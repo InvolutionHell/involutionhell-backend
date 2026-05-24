@@ -7,6 +7,7 @@ import com.involutionhell.backend.posts.dto.PostRequest;
 import com.involutionhell.backend.posts.dto.PostSummaryView;
 import com.involutionhell.backend.posts.dto.PostView;
 import com.involutionhell.backend.posts.service.PostService;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -43,26 +44,37 @@ public class PostController {
     /**
      * 创建文章。
      * 作者 id 从 Sa-Token 登录态取得，不接受前端传入（防伪造）。
+     * 并发/重试触发 (author_id, slug) UNIQUE 冲突时返回 409。
      */
     @PostMapping
     @SaCheckLogin
     public ResponseEntity<ApiResponse<PostView>> create(@RequestBody PostRequest req) {
         long authorId = StpUtil.getLoginIdAsLong();
-        PostView view = postService.create(authorId, req);
-        return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.ok(view));
+        try {
+            PostView view = postService.create(authorId, req);
+            return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.ok(view));
+        } catch (DuplicateKeyException e) {
+            return ResponseEntity.status(HttpStatus.CONFLICT)
+                    .body(new ApiResponse<>(false, "slug 已被占用，请修改文件名后重试", null));
+        }
     }
 
     /**
      * 更新文章内容。
-     * Service 层做 owner 校验，非作者返回 403。
+     * Service 层做 owner 校验，非作者返回 403；slug 冲突返回 409。
      */
     @PutMapping("/{id}")
     @SaCheckLogin
-    public ApiResponse<PostView> update(@PathVariable Long id,
-                                        @RequestBody PostRequest req) {
+    public ResponseEntity<ApiResponse<PostView>> update(@PathVariable Long id,
+                                                        @RequestBody PostRequest req) {
         long callerId = StpUtil.getLoginIdAsLong();
-        PostView view = postService.update(callerId, id, req);
-        return ApiResponse.ok(view);
+        try {
+            PostView view = postService.update(callerId, id, req);
+            return ResponseEntity.ok(ApiResponse.ok(view));
+        } catch (DuplicateKeyException e) {
+            return ResponseEntity.status(HttpStatus.CONFLICT)
+                    .body(new ApiResponse<>(false, "slug 已被占用，请修改文件名后重试", null));
+        }
     }
 
     /**

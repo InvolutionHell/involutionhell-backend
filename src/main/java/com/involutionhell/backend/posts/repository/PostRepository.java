@@ -1,5 +1,6 @@
 package com.involutionhell.backend.posts.repository;
 
+import com.involutionhell.backend.posts.dto.PostSummaryView;
 import com.involutionhell.backend.posts.model.Post;
 
 import java.util.List;
@@ -27,16 +28,20 @@ public interface PostRepository {
 
     /**
      * 公开 feed 列表：status=PUBLISHED + visibility=PUBLIC，按 created_at DESC 分页。
+     * JOIN user_accounts 一次取回作者信息，避免 service 层 N+1 查询。
      * limit 上限由 Service 层限定，避免超大 offset 拖垮 DB。
      */
-    List<Post> findFeed(int limit, int offset);
+    List<PostSummaryView> findFeedWithAuthor(int limit, int offset);
 
     /** 按 slug 前缀统计同作者已存在的文章数（slug 去重时用）。 */
     int countByAuthorAndSlugPrefix(Long authorId, String slugPrefix);
 
-    /** 更新文章内容字段（title/description/tags/contentMd/coverUrl/slug）。 */
-    void update(Long id, String slug, String title, String description,
-                String tagsJson, String contentMd, String coverUrl);
+    /**
+     * 更新文章内容字段（title/description/tags/contentMd/coverUrl/slug）。
+     * 返回受影响行数；0 表示 id 不存在（并发删除场景）。
+     */
+    int update(Long id, String slug, String title, String description,
+               String tagsJson, String contentMd, String coverUrl);
 
     /** 删除文章（物理删除）。 */
     void delete(Long id);

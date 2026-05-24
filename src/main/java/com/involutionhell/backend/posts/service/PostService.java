@@ -1,6 +1,7 @@
 package com.involutionhell.backend.posts.service;
 
 import com.involutionhell.backend.common.error.AccessDeniedBusinessException;
+import com.involutionhell.backend.common.error.ResourceNotFoundException;
 import com.involutionhell.backend.posts.dto.PostRequest;
 import com.involutionhell.backend.posts.dto.PostSummaryView;
 import com.involutionhell.backend.posts.dto.PostView;
@@ -13,6 +14,7 @@ import com.involutionhell.backend.usercenter.repository.UserAccountRepository;
 import com.involutionhell.backend.usercenter.service.UserCenterService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.ObjectMapper;
@@ -132,28 +134,32 @@ public class PostService {
         Post existing = requirePost(postId);
         checkOwner(callerId, existing);
 
-        // slug 处理：前端可传新 slug（改 URL 场景），不传则沿用旧 slug
+        // slug 处理：前端可传新 slug（改 URL 场景），不传则沿用旧 slug。
+        // 必须经 sanitizeSlug 规范化，保证与 create 路径的格式一致（小写、连字符、长度限制）。
         String newSlug = (req.slug() != null && !req.slug().isBlank())
-                ? req.slug()
+                ? sanitizeSlug(req.slug())
                 : existing.slug();
 
-        // 若 slug 改变，需要检查新 slug 是否与该作者其他文章冲突
+        // slug 冲突检查基于规范化后的值，排除自身（slug 未变则跳过）
         if (!newSlug.equals(existing.slug())) {
             boolean taken = postRepo.findByAuthorAndSlug(callerId, newSlug).isPresent();
             if (taken) {
-                throw new IllegalArgumentException("slug 已被使用：" + newSlug);
+                throw new DuplicateKeyException("slug 已被使用：" + newSlug);
             }
         }
 
         String tagsJson = serializeTags(req.tags());
-        postRepo.update(postId, newSlug, req.title(), req.description(),
+        // update 返回受影响行数；0 表示记录在校验完成后被并发删除
+        int affected = postRepo.update(postId, newSlug, req.title(), req.description(),
                 tagsJson, req.contentMd(), req.coverUrl());
+        if (affected == 0) {
+            throw new ResourceNotFoundException("文章已不存在：" + postId);
+        }
 
         log.info("post updated: id={} author={}", postId, callerId);
 
-        Post updated = postRepo.findById(postId)
-                .orElseThrow(() -> new IllegalStateException("post not found after update: " + postId));
-        return buildView(updated);
+        return buildView(postRepo.findById(postId)
+                .orElseThrow(() -> new ResourceNotFoundException("文章不存在：" + postId)));
     }
 
     /**
@@ -241,19 +247,8 @@ public class PostService {
     public List<PostSummaryView> listFeed(int limit, int offset) {
         int safeLimit  = Math.min(Math.max(limit, 1), MAX_FEED_LIMIT);
         int safeOffset = Math.max(offset, 0);
-
-        List<Post> posts = postRepo.findFeed(safeLimit, safeOffset);
-
-        // 批量拼作者信息：每篇独立查一次（MVP 量级可接受；后续可加缓存或 JOIN 优化）
-        return posts.stream()
-                .map(p -> {
-                    UserAccount author = userAccountRepository.findById(p.authorId()).orElse(null);
-                    String username    = author != null ? author.username()    : "unknown";
-                    String displayName = author != null ? author.displayName() : "";
-                    String avatarUrl   = author != null ? author.avatarUrl()   : null;
-                    return PostSummaryView.from(p, username, displayName, avatarUrl);
-                })
-                .toList();
+        // JOIN 查询一次取回作者信息，消除 N+1
+        return postRepo.findFeedWithAuthor(safeLimit, safeOffset);
     }
 
     // ========== 私有工具方法 ==========
@@ -271,11 +266,11 @@ public class PostService {
     }
 
     /**
-     * 按 id 查文章，不存在则抛 404 语义的 IllegalArgumentException。
+     * 按 id 查文章，不存在则抛 ResourceNotFoundException（→ 404）。
      */
     private Post requirePost(Long postId) {
         return postRepo.findById(postId)
-                .orElseThrow(() -> new IllegalArgumentException("文章不存在：" + postId));
+                .orElseThrow(() -> new ResourceNotFoundException("文章不存在：" + postId));
     }
 
     /**
