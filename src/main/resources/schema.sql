@@ -232,4 +232,41 @@ CREATE TABLE IF NOT EXISTS link_reports (
     UNIQUE (link_id, reporter_id)
 );
 
+-- =============================================================================
+-- Posts（用户原创文章）相关表
+-- =============================================================================
+-- 背景：站内编辑器写完后直接落库，不走 Git PR，与 Fumadocs(/docs) 体系完全隔离。
+-- 展示位置：/feed 原创 Tab + /u/{username}/posts 个人文章列表 + 详情/分享页。
+-- SEO 隔离：visibility=PUBLIC 但页面带 noindex，不进 sitemap，不被搜索引擎收录。
+-- 转正：文章上有"一键转正"按钮，跳 GitHub 新建文件页半自动发 PR，promoted_pr_url 记录链接。
+--
+-- visibility 枚举：
+--   PUBLIC   - 公开（任何人可访问，noindex 隔离 SEO）
+--   UNLISTED - 仅凭链接访问（预留，MVP 暂不暴露给前端）
+--
+-- status 枚举：
+--   DRAFT     - 草稿（预留，MVP 阶段前端发布直接走 PUBLISHED）
+--   PUBLISHED - 已发布，对外可见
+CREATE TABLE IF NOT EXISTS posts (
+    id              BIGSERIAL    PRIMARY KEY,
+    author_id       BIGINT       NOT NULL REFERENCES user_accounts(id) ON DELETE CASCADE,
+    slug            VARCHAR(128) NOT NULL,            -- 分享 URL 用，作者内唯一
+    title           TEXT         NOT NULL,
+    description     TEXT,
+    tags            JSONB        NOT NULL DEFAULT '[]'::jsonb,
+    content_md      TEXT         NOT NULL,            -- 原始 markdown（图片已是 R2 公开 URL）
+    cover_url       TEXT,
+    visibility      VARCHAR(16)  NOT NULL DEFAULT 'PUBLIC',   -- PUBLIC / UNLISTED
+    status          VARCHAR(16)  NOT NULL DEFAULT 'PUBLISHED',-- DRAFT / PUBLISHED
+    promoted_pr_url TEXT,                             -- 转正后记录 GitHub PR 链接
+    promoted_at     TIMESTAMPTZ,
+    view_count      INT          NOT NULL DEFAULT 0,  -- 预留曝光计数
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    UNIQUE (author_id, slug)
+);
+
+CREATE INDEX IF NOT EXISTS idx_posts_author ON posts(author_id);
+CREATE INDEX IF NOT EXISTS idx_posts_feed   ON posts(status, visibility, created_at DESC);
+
 CREATE INDEX IF NOT EXISTS idx_link_reports_link ON link_reports(link_id);
