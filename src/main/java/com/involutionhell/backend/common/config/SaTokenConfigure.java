@@ -53,6 +53,12 @@ public class SaTokenConfigure implements WebMvcConfigurer {
                 // 用 /** 覆盖子路径（/internal 提交 + /internal/summary 查询）。
                 .notMatch("/api/community/links/internal", "/api/community/links/internal/**")
                 .notMatch("/api/chat/sessions/save")       // AI 对话持久化（匿名 / 登录都写，登录时自动关联 userId）
+                // Posts 公开读接口：
+                //   GET /api/posts/feed                  - /feed 原创 Tab 列表（匿名可访问）
+                //   GET /api/posts/{username}/{slug}     - 详情/分享页（匿名可访问）
+                // 写接口（POST/PUT/DELETE）和 /mine 由方法级 @SaCheckLogin 守卫，无需在此放行。
+                .notMatch("/api/posts/feed")
+                .notMatch("/api/posts/*/*")
                 .check(r -> StpUtil.checkLogin());         // 未登录抛出 NotLoginException
         })).addPathPatterns("/**");
     }
