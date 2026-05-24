@@ -117,10 +117,9 @@ public class JdbcPostRepository implements PostRepository {
 
     @Override
     public List<PostSummaryView> findFeedWithAuthor(int limit, int offset) {
-        // JOIN user_accounts 一次拿回作者字段，消除 service 层 N+1 查询
-        String sql = "SELECT p.id, p.author_id, p.slug, p.title, p.description, p.tags, "
-                + "p.cover_url, p.visibility, p.status, p.promoted_pr_url, "
-                + "p.view_count, p.created_at, p.updated_at, "
+        // p.* 取回 posts 全列（rowMapper 需要 content_md 等全字段），
+        // 再追加 3 个作者别名列，LEFT JOIN user_accounts 一次消除 N+1
+        String sql = "SELECT p.*, "
                 + "u.username AS author_username, "
                 + "u.display_name AS author_display_name, "
                 + "u.avatar_url AS author_avatar_url "
