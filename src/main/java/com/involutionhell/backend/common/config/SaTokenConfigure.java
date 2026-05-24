@@ -59,6 +59,8 @@ public class SaTokenConfigure implements WebMvcConfigurer {
                 // 写接口（POST/PUT/DELETE）和 /mine 由方法级 @SaCheckLogin 守卫，无需在此放行。
                 .notMatch("/api/posts/feed")
                 .notMatch("/api/posts/*/*")
+                // 文档路径解析：GET /api/docs/resolve?path=... 公开，无需登录
+                .notMatch("/api/docs/resolve")
                 .check(r -> StpUtil.checkLogin());         // 未登录抛出 NotLoginException
         })).addPathPatterns("/**");
     }
