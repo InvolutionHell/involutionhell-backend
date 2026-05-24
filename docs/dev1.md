@@ -11,6 +11,12 @@
 | 退出登录 | `POST /auth/logout`（需 `satoken` header） |
 | 健康检查 | `GET /actuator/health` |
 | 排行榜聚合（公开，前端 Vercel build 用） | `GET /api/public/leaderboard` |
+| 原创文章 feed（公开） | `GET /api/posts/feed` |
+| 文章详情/分享页（公开） | `GET /api/posts/{username}/{slug}` |
+| 创建文章（需 satoken） | `POST /api/posts` |
+| 我的文章（需 satoken） | `GET /api/posts/mine` |
+
+详细契约见 [`docs/posts/README.md`](posts/README.md)。
 
 ---
 
