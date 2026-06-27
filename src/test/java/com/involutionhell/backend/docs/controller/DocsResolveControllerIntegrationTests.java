@@ -1,6 +1,7 @@
 package com.involutionhell.backend.docs.controller;
 
 import com.involutionhell.backend.support.AbstractWebIntegrationTest;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -24,6 +25,14 @@ class DocsResolveControllerIntegrationTests extends AbstractWebIntegrationTest {
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
+
+    // 共享 @SpringBootTest context + H2 DB_CLOSE_DELAY=-1：每个用例前清表，避免本类 seed 的行
+    // 残留污染后续读 docs/doc_paths 的测试类（与 AnalyticsServiceGetTopDocsIntegrationTests 同款）。
+    @BeforeEach
+    void cleanDocsTables() {
+        jdbcTemplate.update("DELETE FROM doc_paths");
+        jdbcTemplate.update("DELETE FROM docs");
+    }
 
     private void seedDoc(String id, String pathCurrent, String historicalPath) {
         jdbcTemplate.update(
