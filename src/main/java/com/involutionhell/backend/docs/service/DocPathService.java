@@ -68,26 +68,28 @@ public class DocPathService {
         }
 
         // docs.path_current 前缀是 content/，doc_paths.path 前缀是 app/
+        // 后缀正则要先剥可选的 .en/.zh locale 段再剥 .md/.mdx：path_current 可能指向翻译版
+        // 文件（如 leworldmodel.en.md），不剥 locale 段会让 canonical 漏出 ".en" 拼成死链。
         String sql = """
                 SELECT canonical_path FROM (
                     SELECT regexp_replace(
                                regexp_replace(d.path_current, '^content', ''),
-                               '(/index)?\\.(mdx|md)$', ''
+                               '(/index)?(\\.(en|zh))?\\.(mdx|md)$', ''
                            ) AS match_path,
                            regexp_replace(
                                regexp_replace(d.path_current, '^content', ''),
-                               '(/index)?\\.(mdx|md)$', ''
+                               '(/index)?(\\.(en|zh))?\\.(mdx|md)$', ''
                            ) AS canonical_path
                     FROM docs d
                     WHERE d.path_current IS NOT NULL
                     UNION ALL
                     SELECT regexp_replace(
                                regexp_replace(dp.path, '^app', ''),
-                               '(/index)?\\.(mdx|md)$', ''
+                               '(/index)?(\\.(en|zh))?\\.(mdx|md)$', ''
                            ) AS match_path,
                            regexp_replace(
                                regexp_replace(d.path_current, '^content', ''),
-                               '(/index)?\\.(mdx|md)$', ''
+                               '(/index)?(\\.(en|zh))?\\.(mdx|md)$', ''
                            ) AS canonical_path
                     FROM doc_paths dp
                     JOIN docs d ON d.id = dp.doc_id
