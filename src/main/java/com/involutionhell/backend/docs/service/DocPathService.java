@@ -34,17 +34,10 @@ public class DocPathService {
      * - 去尾斜杠
      */
     String normalize(String path) {
+        // 复用 normalizeStatic 这一份实现，避免归一化逻辑两处漂移（@Cacheable key 和实际查询
+        // 必须用同一套归一化，否则缓存键和查询输入对不上）。null 仍返回 null 供调用方短路。
         if (path == null) return null;
-        // 去 fragment
-        int h = path.indexOf('#');
-        if (h >= 0) path = path.substring(0, h);
-        // strip locale 前缀 /zh/ 或 /en/
-        path = path.replaceFirst("^/(zh|en)/", "/");
-        // 去尾斜杠（根路径 "/" 不动）
-        if (path.length() > 1 && path.endsWith("/")) {
-            path = path.substring(0, path.length() - 1);
-        }
-        return path;
+        return normalizeStatic(path);
     }
 
     /**
