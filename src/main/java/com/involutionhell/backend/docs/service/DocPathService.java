@@ -34,17 +34,10 @@ public class DocPathService {
      * - 去尾斜杠
      */
     String normalize(String path) {
+        // 复用 normalizeStatic 这一份实现，避免归一化逻辑两处漂移（@Cacheable key 和实际查询
+        // 必须用同一套归一化，否则缓存键和查询输入对不上）。null 仍返回 null 供调用方短路。
         if (path == null) return null;
-        // 去 fragment
-        int h = path.indexOf('#');
-        if (h >= 0) path = path.substring(0, h);
-        // strip locale 前缀 /zh/ 或 /en/
-        path = path.replaceFirst("^/(zh|en)/", "/");
-        // 去尾斜杠（根路径 "/" 不动）
-        if (path.length() > 1 && path.endsWith("/")) {
-            path = path.substring(0, path.length() - 1);
-        }
-        return path;
+        return normalizeStatic(path);
     }
 
     /**
@@ -67,37 +60,17 @@ public class DocPathService {
             return Optional.empty();
         }
 
-        // docs.path_current 前缀是 content/，doc_paths.path 前缀是 app/
-        // 后缀正则要先剥可选的 .en/.zh locale 段再剥 .md/.mdx：path_current 可能指向翻译版
-        // 文件（如 leworldmodel.en.md），不剥 locale 段会让 canonical 漏出 ".en" 拼成死链。
-        String sql = """
-                SELECT canonical_path FROM (
-                    SELECT regexp_replace(
-                               regexp_replace(d.path_current, '^content', ''),
-                               '(/index)?(\\.(en|zh))?\\.(mdx|md)$', ''
-                           ) AS match_path,
-                           regexp_replace(
-                               regexp_replace(d.path_current, '^content', ''),
-                               '(/index)?(\\.(en|zh))?\\.(mdx|md)$', ''
-                           ) AS canonical_path
-                    FROM docs d
-                    WHERE d.path_current IS NOT NULL
-                    UNION ALL
-                    SELECT regexp_replace(
-                               regexp_replace(dp.path, '^app', ''),
-                               '(/index)?(\\.(en|zh))?\\.(mdx|md)$', ''
-                           ) AS match_path,
-                           regexp_replace(
-                               regexp_replace(d.path_current, '^content', ''),
-                               '(/index)?(\\.(en|zh))?\\.(mdx|md)$', ''
-                           ) AS canonical_path
-                    FROM doc_paths dp
-                    JOIN docs d ON d.id = dp.doc_id
-                    WHERE d.path_current IS NOT NULL
-                ) t
-                WHERE match_path = ?
-                LIMIT 1
-                """;
+        // path_current 前缀 content/、doc_paths.path 前缀 app/；归一化正则统一走 DocPathSql，
+        // 与 AnalyticsService 共用同一份，避免两处漂移。
+        String docExpr = DocPathSql.canonicalExpr("d.path_current", "content");
+        String histExpr = DocPathSql.canonicalExpr("dp.path", "app");
+        String sql = "SELECT canonical_path FROM ("
+                + "  SELECT " + docExpr + " AS match_path, " + docExpr + " AS canonical_path"
+                + "  FROM docs d WHERE d.path_current IS NOT NULL"
+                + "  UNION ALL"
+                + "  SELECT " + histExpr + " AS match_path, " + docExpr + " AS canonical_path"
+                + "  FROM doc_paths dp JOIN docs d ON d.id = dp.doc_id WHERE d.path_current IS NOT NULL"
+                + ") t WHERE match_path = ? LIMIT 1";
 
         List<String> results = jdbcTemplate.queryForList(sql, String.class, normalizedPath);
         return results.isEmpty() ? Optional.empty() : Optional.of(results.get(0));

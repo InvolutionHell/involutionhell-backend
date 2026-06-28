@@ -1,6 +1,7 @@
 package com.involutionhell.backend.analytics.service;
 
 import com.involutionhell.backend.analytics.dto.TopDocDto;
+import com.involutionhell.backend.docs.service.DocPathSql;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.cache.annotation.Cacheable;
@@ -84,6 +85,10 @@ public class AnalyticsService {
         if (q >= 0) path = path.substring(0, q);
         int h = path.indexOf('#');
         if (h >= 0) path = path.substring(0, h);
+        // i18n 段化（2026-05）后 GA4 pagePath 带 locale 前缀（/en/docs/...、/zh/docs/...），
+        // 但 match_path 是无 locale 的 /docs/...。不剥 locale 段，段化后的全部流量都对不上，
+        // 榜单只剩段化前的老 URL（近 7d/30d 窗口几乎空）。剥掉后 zh/en 同篇 views 还会合并。
+        path = path.replaceFirst("^/(zh|en)/", "/");
         // 去掉尾部斜杠：docs.path_current / doc_paths.path 正则归一化后都不带尾斜杠
         if (path.length() > 1 && path.endsWith("/")) {
             path = path.substring(0, path.length() - 1);
@@ -105,9 +110,9 @@ public class AnalyticsService {
      * {@code backend/docs/migrations/2026-04-22-seed-ia-reorg-doc-paths.sql} 一次性回填的
      * IA 重组前前缀别名，两者一起覆盖了绝大部分历史流量。
      *
-     * <p>GA4 pagePath 形如 {@code /docs/ai/multimodal/qwenvl}；
-     * path_current / doc_paths.path 形如 {@code app/docs/ai/multimodal/qwenvl/index.mdx}
-     * 或 {@code app/docs/.../xxx.mdx}。
+     * <p>GA4 pagePath 形如 {@code /en/docs/learn/ai}（段化后带 locale 前缀，normalizePath 剥掉）；
+     * path_current 形如 {@code content/docs/learn/ai/index.mdx}，doc_paths.path 形如
+     * {@code app/docs/ai/multimodal/qwenvl.mdx}（历史前缀 app/）。
      *
      * <p>查询失败直接抛 {@link IllegalStateException}，由全局异常处理器返回 500，
      * 不再返回空 Map 导致上层 containsKey 过滤把整个榜单静默清空。
@@ -120,36 +125,18 @@ public class AnalyticsService {
             // - 从 docs 过来的：match 和 canonical 都是 path_current 归一化，指自己
             // - 从 doc_paths 过来的：match 是历史路径归一化，canonical 仍然是 path_current
             //   归一化（通过 JOIN docs 拿），所以老 URL 最终落到当前 URL 上
-            String sql = """
-                    SELECT match_path, canonical_path, title
-                    FROM (
-                        SELECT regexp_replace(
-                                   regexp_replace(d.path_current, '^app', ''),
-                                   '(/index)?\\.(mdx|md)$', ''
-                               ) AS match_path,
-                               regexp_replace(
-                                   regexp_replace(d.path_current, '^app', ''),
-                                   '(/index)?\\.(mdx|md)$', ''
-                               ) AS canonical_path,
-                               d.title
-                        FROM docs d
-                        WHERE d.path_current IS NOT NULL
-                        UNION ALL
-                        SELECT regexp_replace(
-                                   regexp_replace(dp.path, '^app', ''),
-                                   '(/index)?\\.(mdx|md)$', ''
-                               ) AS match_path,
-                               regexp_replace(
-                                   regexp_replace(d.path_current, '^app', ''),
-                                   '(/index)?\\.(mdx|md)$', ''
-                               ) AS canonical_path,
-                               d.title
-                        FROM doc_paths dp
-                        JOIN docs d ON d.id = dp.doc_id
-                        WHERE d.path_current IS NOT NULL
-                    ) t
-                    WHERE match_path = ANY(?)
-                    """;
+            // 归一化正则与 DocPathService 共用 DocPathSql：path_current 前缀 content/、
+            // doc_paths.path 前缀 app/。曾误用 ^app 剥 path_current（content/ 剥不掉）→ canonical
+            // 泄漏 content/ 前缀，榜单链接 404。
+            String docExpr = DocPathSql.canonicalExpr("d.path_current", "content");
+            String histExpr = DocPathSql.canonicalExpr("dp.path", "app");
+            String sql = "SELECT match_path, canonical_path, title FROM ("
+                    + "  SELECT " + docExpr + " AS match_path, " + docExpr + " AS canonical_path, d.title"
+                    + "  FROM docs d WHERE d.path_current IS NOT NULL"
+                    + "  UNION ALL"
+                    + "  SELECT " + histExpr + " AS match_path, " + docExpr + " AS canonical_path, d.title"
+                    + "  FROM doc_paths dp JOIN docs d ON d.id = dp.doc_id WHERE d.path_current IS NOT NULL"
+                    + ") t WHERE match_path = ANY(?)";
             List<Map<String, Object>> rows = jdbcTemplate.queryForList(
                     sql,
                     (Object) paths.toArray(new String[0])
