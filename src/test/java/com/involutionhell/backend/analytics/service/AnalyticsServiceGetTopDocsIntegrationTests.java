@@ -21,14 +21,15 @@ import static org.mockito.Mockito.when;
 
 /**
  * 真跑 JdbcTemplate 的 AnalyticsService 集成测试：H2 PostgreSQL 模式下演练
- * queryDocTitles 里的 UNION SQL，确保
- *   1) 当前 docs.path_current 命中
- *   2) 老路径通过 doc_paths.path 命中（模拟 IA 重组前的 GA4 pagePath）
- *   3) query / anchor / 尾斜杠清洗后仍能命中
+ * queryDocInfo 里的 UNION SQL，确保
+ *   1) 当前 docs.path_current 命中（前缀 content/）
+ *   2) 老路径通过 doc_paths.path 命中（前缀 app/，模拟 IA 重组前的 GA4 pagePath）
+ *   3) query / anchor / 尾斜杠 / locale 前缀清洗后仍能命中
  *   4) 没录入过的路径被过滤掉，不会因 null 炸掉榜单
+ *   5) canonical 永远不泄漏 content/ 前缀，也不漏 .en/.zh locale 后缀
  *
- * 为什么不复用 AbstractWebIntegrationTest：那边 @AutoConfigureMockMvc + MockMvc 不需要，
- * 重新声明一组最小属性更直观，也避免引入 OAuth / JustAuth 之类与本测试无关的依赖覆盖。
+ * 注意 path_current 的前缀必须是 content/（生产真实格式）。历史上本测试 seed 成 app/，
+ * 正好对上当时 queryDocInfo 误用的 ^app，测试绿但生产榜单链接全部泄漏 content/ 前缀 404。
  */
 @SpringBootTest(properties = {
         "spring.datasource.url=jdbc:h2:mem:analytics;MODE=PostgreSQL;DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE",
@@ -71,6 +72,7 @@ class AnalyticsServiceGetTopDocsIntegrationTests {
         if (cache != null) cache.clear();
     }
 
+    /** path_current 必须是生产真实前缀 content/。 */
     private void insertDoc(String id, String pathCurrent, String title) {
         jdbcTemplate.update(
                 "INSERT INTO docs (id, path_current, title) VALUES (?, ?, ?)",
@@ -78,6 +80,7 @@ class AnalyticsServiceGetTopDocsIntegrationTests {
         );
     }
 
+    /** doc_paths.path 是历史前缀 app/。 */
     private void insertDocPath(String docId, String path) {
         jdbcTemplate.update(
                 "INSERT INTO doc_paths (doc_id, path) VALUES (?, ?)",
@@ -87,7 +90,7 @@ class AnalyticsServiceGetTopDocsIntegrationTests {
 
     @Test
     void matchesCurrentPathAfterRegexpNormalization() {
-        insertDoc("qwenvl", "app/docs/learn/ai/multimodal/qwenvl/index.mdx", "QwenVL 多模态");
+        insertDoc("qwenvl", "content/docs/learn/ai/multimodal/qwenvl/index.mdx", "QwenVL 多模态");
 
         when(ga4ReportService.fetchTopPaths(anyString(), anyInt())).thenReturn(List.of(
                 new Ga4ReportService.PathCount("/docs/learn/ai/multimodal/qwenvl", 500)
@@ -102,10 +105,58 @@ class AnalyticsServiceGetTopDocsIntegrationTests {
     }
 
     @Test
+    void canonicalDoesNotLeakContentPrefix() {
+        // 回归：path_current 是 content/ 前缀，canonical 决不能带 content/，否则前端拼出 404
+        insertDoc("ai", "content/docs/learn/ai/index.mdx", "AI 知识库");
+
+        when(ga4ReportService.fetchTopPaths(anyString(), anyInt())).thenReturn(List.of(
+                new Ga4ReportService.PathCount("/docs/learn/ai", 3000)
+        ));
+
+        List<TopDocDto> result = analyticsService.getTopDocs("all", 20);
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).path()).isEqualTo("/docs/learn/ai");
+        assertThat(result.get(0).path()).doesNotStartWith("content/");
+    }
+
+    @Test
+    void localePrefixedGa4PathMatchesAndMergesAcrossLocales() {
+        // 段化后 GA4 pagePath 带 locale 前缀；normalizePath 剥掉后 zh/en 同篇合并
+        insertDoc("ai", "content/docs/learn/ai/index.mdx", "AI 知识库");
+
+        when(ga4ReportService.fetchTopPaths(anyString(), anyInt())).thenReturn(List.of(
+                new Ga4ReportService.PathCount("/en/docs/learn/ai", 2000),
+                new Ga4ReportService.PathCount("/zh/docs/learn/ai", 1000)
+        ));
+
+        List<TopDocDto> result = analyticsService.getTopDocs("30d", 20);
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).path()).isEqualTo("/docs/learn/ai");
+        assertThat(result.get(0).views()).isEqualTo(3000L);
+    }
+
+    @Test
+    void translatedDocCanonicalHasNoLocaleSuffix() {
+        // path_current 指向翻译版文件，canonical 不能漏出 .en
+        insertDoc("lwm", "content/docs/learn/ai/papers/leworldmodel.en.md", "LeWorldModel");
+
+        when(ga4ReportService.fetchTopPaths(anyString(), anyInt())).thenReturn(List.of(
+                new Ga4ReportService.PathCount("/en/docs/learn/ai/papers/leworldmodel", 400)
+        ));
+
+        List<TopDocDto> result = analyticsService.getTopDocs("all", 20);
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).path()).isEqualTo("/docs/learn/ai/papers/leworldmodel");
+    }
+
+    @Test
     void historicalPathResolvesToCurrentCanonicalUrl() {
-        // docs 表里存的是 IA 重组后的新路径
-        insertDoc("qwenvl", "app/docs/learn/ai/multimodal/qwenvl/index.mdx", "QwenVL 多模态");
-        // doc_paths 里留有 IA 重组前的老路径（seed SQL 或 backfill 写入）
+        // docs 表里存的是 IA 重组后的新路径（content/ 前缀）
+        insertDoc("qwenvl", "content/docs/learn/ai/multimodal/qwenvl/index.mdx", "QwenVL 多模态");
+        // doc_paths 里留有 IA 重组前的老路径（app/ 前缀，seed SQL 或 backfill 写入）
         insertDocPath("qwenvl", "app/docs/ai/multimodal/qwenvl/index.mdx");
 
         // GA4 给的是老 URL（ALL 窗口里的历史流量）
@@ -124,7 +175,7 @@ class AnalyticsServiceGetTopDocsIntegrationTests {
 
     @Test
     void mergesOldAndNewUrlIntoSingleCanonicalEntry() {
-        insertDoc("qwenvl", "app/docs/learn/ai/multimodal/qwenvl/index.mdx", "QwenVL 多模态");
+        insertDoc("qwenvl", "content/docs/learn/ai/multimodal/qwenvl/index.mdx", "QwenVL 多模态");
         insertDocPath("qwenvl", "app/docs/ai/multimodal/qwenvl/index.mdx");
 
         // IA 重组的那段时间 GA4 同时积累了老 URL 和新 URL 的访问
@@ -143,7 +194,7 @@ class AnalyticsServiceGetTopDocsIntegrationTests {
 
     @Test
     void stripsQueryAndAnchorBeforeMatching() {
-        insertDoc("intro", "app/docs/learn/ai/intro.mdx", "AI 入门");
+        insertDoc("intro", "content/docs/learn/ai/intro.mdx", "AI 入门");
 
         when(ga4ReportService.fetchTopPaths(anyString(), anyInt())).thenReturn(List.of(
                 new Ga4ReportService.PathCount("/docs/learn/ai/intro?utm_source=x", 100),
@@ -161,7 +212,7 @@ class AnalyticsServiceGetTopDocsIntegrationTests {
 
     @Test
     void filtersOutPathsWithNoMatchingDoc() {
-        insertDoc("intro", "app/docs/learn/ai/intro.mdx", "AI 入门");
+        insertDoc("intro", "content/docs/learn/ai/intro.mdx", "AI 入门");
 
         when(ga4ReportService.fetchTopPaths(anyString(), anyInt())).thenReturn(List.of(
                 new Ga4ReportService.PathCount("/docs/learn/ai/intro", 500),
@@ -177,7 +228,7 @@ class AnalyticsServiceGetTopDocsIntegrationTests {
 
     @Test
     void returnsEmptyWhenGa4ReturnsNothing() {
-        insertDoc("intro", "app/docs/learn/ai/intro.mdx", "AI 入门");
+        insertDoc("intro", "content/docs/learn/ai/intro.mdx", "AI 入门");
         when(ga4ReportService.fetchTopPaths(anyString(), anyInt())).thenReturn(List.of());
 
         List<TopDocDto> result = analyticsService.getTopDocs("7d", 20);

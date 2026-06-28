@@ -66,4 +66,26 @@ class AnalyticsServiceNormalizePathTests {
     void emptyInputReturnsEmpty() {
         assertThat(service.normalizePath("")).isEmpty();
     }
+
+    @Test
+    void stripsEnLocalePrefix() {
+        // 段化后 GA4 pagePath 带 locale 前缀，要剥掉才能对上无 locale 的 match_path
+        assertThat(service.normalizePath("/en/docs/learn/ai")).isEqualTo("/docs/learn/ai");
+    }
+
+    @Test
+    void stripsZhLocalePrefix() {
+        assertThat(service.normalizePath("/zh/docs/learn/ai/intro")).isEqualTo("/docs/learn/ai/intro");
+    }
+
+    @Test
+    void stripsLocalePrefixWithQueryAndTrailingSlash() {
+        assertThat(service.normalizePath("/en/docs/learn/ai/?ref=rank")).isEqualTo("/docs/learn/ai");
+    }
+
+    @Test
+    void doesNotStripNonLocaleFirstSegment() {
+        // /docs/... 本身不带 locale 段，不能被误伤
+        assertThat(service.normalizePath("/docs/learn/ai")).isEqualTo("/docs/learn/ai");
+    }
 }
