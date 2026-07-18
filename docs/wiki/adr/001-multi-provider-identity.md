@@ -1,0 +1,111 @@
+---
+type: adr
+title: 多 Provider 身份体系与 OAuth state 防护
+tags: [auth, oauth, identity, security]
+intent: 身份体系设计决策
+status: accepted
+date: 2026-07-18
+supersedes: []
+superseded_by: []
+# schema_source 留空：okf 的符号解析器是 Python-AST 专用，这个 Java/SQL repo
+# 里它无法机器解析，权威代码指针改放 documents.symbols（纯标签，可 grep 可读）。
+schema_source: []
+documents:
+  endpoints:
+    - GET /oauth/render/{provider}
+    - GET /api/auth/callback/{provider}
+    - POST /api/auth/link/{provider}/start
+    - POST /api/auth/link/{provider}/confirm
+  symbols:
+    - src/main/resources/schema.sql (user_identities 表 DDL + 回填)
+    - src/main/java/com/involutionhell/backend/usercenter/model/UserIdentity.java
+    - src/main/java/com/involutionhell/backend/usercenter/repository/UserIdentityRepository.java
+    - src/main/java/com/involutionhell/backend/usercenter/service/AuthService.java (loginByGithub → M1 loginByProvider)
+    - src/main/java/com/involutionhell/backend/usercenter/controller/OAuthController.java (render/callback)
+---
+
+# ADR-001：多 Provider 身份体系与 OAuth state 防护
+
+完整讨论与对抗性 review 见 [RFC issue #42](https://github.com/InvolutionHell/involutionhell-backend/issues/42)。
+本文只记结论和"为什么"；表结构、字段、约束以 `schema_source` 指向的代码为准，不在此复述。
+
+## 背景
+
+站点要接入多个第三方登录（Discord、Google……）。旧模型是单 provider 捷径：
+`user_accounts.github_id` 列 + `username = "github_" + githubId`，每接一家都要改核心表，
+且 provider 烧进了用户名。（历史巧合：库里废弃的 NextAuth `accounts` 表形状本来是对的，
+Sa-Token 迁移时被塌缩掉了。）
+
+## 决策
+
+**账号与登录方式分表**：`user_accounts` = 人（无任何 provider 字段）；`user_identities` =
+登录方式，每行一个 `(provider, provider_user_id)`。接新 provider = OAuth App 注册 +
+两个 env key + AuthRequest 工厂一个 case，零 schema 变更。
+
+关键约束的 why（DDL 见 schema.sql）：
+
+- `UNIQUE (provider, provider_user_id)` — 一个第三方身份只能绑一个账号。
+- `UNIQUE (user_id, provider)` — 同账号同 provider 至多一个身份：`/u/{githubId}`
+  canonical URL 和贡献归属都假设 1:1，放开是一句 DROP，收紧要洗数据。
+- FK `ON DELETE CASCADE` — 删号不留幽灵身份。注意"无 FK"惯例只适用于 Prisma
+  跨系统引用（根 CLAUDE.md），后端表引后端表照常加 FK。
+- 启动回填用无冲突目标的 `ON CONFLICT DO NOTHING` — schema.sql 每次启动执行，
+  必须幂等（有回归测试原样执行两遍验证）。
+
+**GitHub 的特殊性下沉到业务层**：认证层 provider 平权；贡献归属、排行榜、认领档案
+查 `provider = 'github'`。文档是 git-based 是业务事实，不泄漏进认证设计。
+
+## 统一登录 / 绑定流程与 state 协议
+
+**原则：state 是不透明的一次性 nonce，不携带任何身份信息；callback 永远不信任
+state 里的用户身份**（登记为安全不变量 INV-006，随 M1 落进 SecurityInvariantsTests）。
+真实信息挂在服务端 intent 记录上（nonce 为 key，Caffeine 存储，5 分钟 TTL）。
+
+- **登录**（无会话）：`/oauth/render/{provider}` 生成 nonce → 存 intent{mode=login} →
+  种 `oauth_flow=<nonce>` cookie（httpOnly + **SameSite=Lax**，Strict 会把跨站顶级
+  导航的 cookie 剥掉）→ 跳 provider。callback 核对 URL state == cookie nonce，
+  防登录 CSRF：攻击者无法向受害者浏览器种自己的 cookie。
+- **绑定**（已登录，从设置页发起）：satoken 在 localStorage，callback（provider 发起的
+  顶级 GET）拿不到会话，所以把"你是谁"提前到发起时捕获——
+  1. `POST /api/auth/link/{provider}/start`（fetch 带 satoken，可认证）→ 服务端记
+     intent{mode=bind, userId=当前会话} → 种 cookie → 返回授权链接；
+  2. callback 核对 state==cookie，把 provider 身份暂存进 intent，跳回
+     `settings?link_confirm=<nonce>`；
+  3. 前端确认页 → `POST .../confirm`（再带 satoken）→ 服务端二次核对
+     当前会话 == intent.userId → 插入 identity。
+  绑定劫持（攻击者发起流程诱导受害者授权）被 cookie 那关挡住：受害者浏览器没有
+  攻击者的 `oauth_flow` cookie。
+- 绑定回跳契约：`settings?linked={provider}` / `?link_error=identity_taken`（撞
+  UNIQUE 是必然出现的用户可见错误，不混进 oauth_failed）。
+
+## 其他已定结论
+
+- **留 JustAuth，不回 Auth.js/NextAuth**：Auth.js 是前端库，搬回等于推翻 Sa-Token
+  迁移、把认证边界移回前端；JustAuth 已覆盖 OAuth 协议与 provider 目录，真正要手写
+  的只有 provider→user 映射（本表的业务逻辑，换任何库都躲不掉）。Discord 若不在
+  JustAuth 内置列表，写自定义 AuthSource（约 30 行）。
+- **intent / state 存储**：单实例进程内（Caffeine）够用；触发迁移的条件是**多实例**
+  （GraalVM native 部署常伴随），届时连同 Sa-Token session、JustAuth state cache
+  一起迁 Redis——注意本栈目前没有自己的 Redis（机器上两个 Redis 容器分属
+  infisical 和 umami，不共享），迁移意味着新容器 + 解开 pom 里注释掉的依赖。
+- **密码语义**：第三方注册用户的 `password_hash` 用不可用 sentinel `'!'`
+  （discord-bridge 先例），配 `hasUsablePassword()` 判定；"解绑不得移除最后一种
+  登录方式"的判定中，不可用密码不算登录方式，否则 OAuth 用户解绑唯一身份后永久锁死。
+- **新用户 username 生成**：provider login 转 slug + 冲突短随机后缀；**禁纯数字**
+  （撞 `/u/` 路由"纯数字=github_id"的解析约定）、禁 provider 前缀。存量
+  `github_<id>` 用户名永不强迁。
+- **资料刷新只填空缺字段**：多 provider 下 last-login-wins 会互相覆盖头像、
+  用未验证邮箱覆盖 email。
+- **禁止邮箱静默合并**（未验证邮箱 provider 是账户接管向量）；同邮箱只提示引导，
+  合并必须在已登录会话内主动完成。提示功能须随第二个 provider 同期上线，
+  否则上线当天就会产生分叉账号。
+
+## 迁移阶段
+
+| 阶段 | 内容 | 状态 |
+|---|---|---|
+| M0 | 建表 + 幂等回填 + repository | ✅ 本 ADR 随附 PR |
+| M1 | `loginByProvider` 统一流程 + state/cookie 硬化 + INV-006 测试；`github_id` 双写 | 待做 |
+| M2 | 绑定/解绑 + 设置页 UI + 确认页 | 待做 |
+| M3 | Discord 上线；`/u/`、follows 查询改走 identities | 待做 |
+| M4 | identities 稳定一个版本后删 `github_id` 列（单独拆期，保回滚路径） | 待做 |
