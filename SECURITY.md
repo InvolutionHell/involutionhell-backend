@@ -110,3 +110,18 @@
   `change_me` fallback 让部署者忘配 env 时仍能起服务，但起来的就是弱密码后台
   ——必须用 `${VAR:?...}` 形式强制部署期校验。
 - **历史**：2026-05-07 三方 CR 加固项（端口部分历史已修，本次加测试 + 收紧密码默认值）。
+
+## INV-006 · 付费 LLM 端点必须每用户限流
+
+- **保护点**：`OpenAiStreamController#streamResponses`（`/openai/responses/stream`）
+  与 `OpenAiStreamRateLimiter`
+- **测试**：
+  - `OpenAiStreamRateLimiterTests#underLimitPassesAndOverLimitGets429`
+  - `OpenAiStreamRateLimiterTests#usersAreIsolated`
+  - `OpenAiStreamRateLimiterTests#windowExpiryResetsTheCounter`
+- **为什么**：该端点烧付费 LLM 额度。`@SaCheckLogin` 只挡未登录；登录用户可
+  绕过 Next.js 层的 Upstash 限流直接 curl 后端（Caddy 裸透传不过滤路径），
+  无限流时单用户即可刷爆账单（#297 估算 ~$5/小时）。限流必须落在 Java 层
+  本身，不能只依赖前端网关。上限经 `openai.stream.requests-per-minute`
+  配置（默认 10/分钟/用户），调大需说明场景。
+- **历史**：2026-04-16 由 #297 报告；2026-07-18 加限流 + 本不变量。

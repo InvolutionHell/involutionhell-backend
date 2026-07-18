@@ -1,7 +1,9 @@
 package com.involutionhell.backend.openai.controller;
 
 import cn.dev33.satoken.annotation.SaCheckLogin;
+import cn.dev33.satoken.stp.StpUtil;
 import com.involutionhell.backend.openai.dto.OpenAiStreamRequest;
+import com.involutionhell.backend.openai.service.OpenAiStreamRateLimiter;
 import com.involutionhell.backend.openai.service.OpenAiStreamService;
 import jakarta.validation.Valid;
 import org.springframework.http.MediaType;
@@ -17,9 +19,12 @@ import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBo
 public class OpenAiStreamController {
 
     private final OpenAiStreamService openAiStreamService;
+    private final OpenAiStreamRateLimiter rateLimiter;
 
-    public OpenAiStreamController(OpenAiStreamService openAiStreamService) {
+    public OpenAiStreamController(
+            OpenAiStreamService openAiStreamService, OpenAiStreamRateLimiter rateLimiter) {
         this.openAiStreamService = openAiStreamService;
+        this.rateLimiter = rateLimiter;
     }
 
     /**
@@ -30,6 +35,9 @@ public class OpenAiStreamController {
     @SaCheckLogin
     @PostMapping(path = "/responses/stream", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.TEXT_PLAIN_VALUE)
     public ResponseEntity<StreamingResponseBody> streamResponses(@Valid @RequestBody OpenAiStreamRequest request) {
+        // INV-006：付费 LLM 端点必须限流。@SaCheckLogin 只挡未登录，
+        // 登录用户绕过 Next.js 直 curl 后端仍会被这里的每用户窗口拦住（#297）
+        rateLimiter.checkOrThrow(StpUtil.getLoginIdAsLong());
         /*
          * ============================
          * 🗑️ 被废弃的旧版方法声明留痕：
