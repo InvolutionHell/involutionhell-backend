@@ -39,11 +39,17 @@ public class JdbcUserIdentityRepository implements UserIdentityRepository {
         return ts == null ? null : ts.toInstant();
     }
 
+    // provider 在仓库入口统一小写：JustAuth 的 source 名是大写（"GITHUB"），
+    // 而表存小写（CHECK 约束）。不归一化的话查询侧静默查空 → 老用户被当新用户建号。
+    private static String normalize(String provider) {
+        return provider == null ? null : provider.toLowerCase(java.util.Locale.ROOT);
+    }
+
     @Override
     public Optional<UserIdentity> findByProviderAndProviderUserId(String provider, String providerUserId) {
         List<UserIdentity> rows = jdbc.query(
                 "SELECT * FROM user_identities WHERE provider = ? AND provider_user_id = ?",
-                rowMapper, provider, providerUserId);
+                rowMapper, normalize(provider), providerUserId);
         return rows.stream().findFirst();
     }
 
@@ -63,7 +69,7 @@ public class JdbcUserIdentityRepository implements UserIdentityRepository {
                             "VALUES (?, ?, ?, ?, ?)",
                     new String[]{"id"});
             ps.setLong(1, identity.userId());
-            ps.setString(2, identity.provider());
+            ps.setString(2, normalize(identity.provider()));
             ps.setString(3, identity.providerUserId());
             ps.setString(4, identity.emailAtLink());
             ps.setString(5, identity.displayNameAtLink());

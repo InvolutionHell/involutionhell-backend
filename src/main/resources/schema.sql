@@ -94,9 +94,15 @@ CREATE TABLE IF NOT EXISTS user_identities (
     UNIQUE (user_id, provider)
 );
 
--- 存量 GitHub 身份回填。schema.sql 每次启动执行，靠 ON CONFLICT 幂等；
--- 不带冲突目标 = 命中任一 UNIQUE 都静默跳过，顺带补齐双写期漂移的行。
--- github_id 列在 user_identities 稳定运行一个版本前保持双写（migration M1-M3）。
+-- 存量 GitHub 身份回填。本文件在 SPRING_SQL_INIT_MODE=always 时随启动执行
+-- （默认 never，见 application.properties），ON CONFLICT 无冲突目标保证重跑幂等。
+-- 边界（详见 ADR-001）：
+--   1. 只治"行缺失"，不治"值变化"——github_id 改过值的账号，identity 行不会跟着
+--      变（撞 UNIQUE(user_id,provider) 被跳过），值同步是 M1 双写逻辑的责任；
+--   2. 只要 github_id 列仍有值，删除的 github identity 行会在下次执行时被重新
+--      插入——因此 M2 解绑 github 时必须同时清空 user_accounts.github_id，
+--      否则重启会静默复活用户已撤销的绑定。
+-- github_id 列在 user_identities 稳定运行一个版本前保持双写（M1-M3，M4 删列）。
 INSERT INTO user_identities (user_id, provider, provider_user_id)
 SELECT id, 'github', CAST(github_id AS VARCHAR)
 FROM user_accounts

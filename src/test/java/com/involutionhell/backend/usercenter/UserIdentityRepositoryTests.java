@@ -98,22 +98,48 @@ class UserIdentityRepositoryTests extends AbstractWebIntegrationTest {
     }
 
     /**
-     * 生产 schema.sql 的回填语句每次启动都会执行，必须幂等——
-     * 这里在 H2 上原样执行两遍，验证第二遍既不报错也不产生重复行。
+     * 生产 schema.sql 的回填语句在 SPRING_SQL_INIT_MODE=always 环境随启动重复执行，
+     * 必须幂等。语句从 classpath 的 schema.sql 机械提取（不手抄副本），
+     * 保证测试守护的永远是生产真正执行的那条 SQL；在 H2 上执行两遍，
+     * 验证第二遍既不报错也不产生重复行。
      */
     @Test
-    void githubBackfillIsIdempotent() {
+    void githubBackfillIsIdempotent() throws Exception {
         long githubId = 900_000_000L + (long) (Math.random() * 1_000_000);
         long userId = createUser(githubId);
 
-        String backfill = "INSERT INTO user_identities (user_id, provider, provider_user_id) "
-                + "SELECT id, 'github', CAST(github_id AS VARCHAR) FROM user_accounts "
-                + "WHERE github_id IS NOT NULL ON CONFLICT DO NOTHING";
+        String schema = new String(
+                getClass().getResourceAsStream("/schema.sql").readAllBytes(),
+                java.nio.charset.StandardCharsets.UTF_8);
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("INSERT INTO user_identities[^;]+;")
+                .matcher(schema);
+        assertThat(m.find())
+                .as("schema.sql 里应能定位到 user_identities 回填语句")
+                .isTrue();
+        String backfill = m.group();
+
         jdbc.execute(backfill);
         jdbc.execute(backfill);
 
         Integer rows = jdbc.queryForObject(
                 "SELECT COUNT(*) FROM user_identities WHERE user_id = ?", Integer.class, userId);
         assertThat(rows).isEqualTo(1);
+    }
+
+    /**
+     * JustAuth 的 source 名是大写（"GITHUB"），表存小写（CHECK 约束）。
+     * 仓库入口必须归一化，否则查询侧静默查空、插入侧撞 CHECK。
+     */
+    @Test
+    void providerIsNormalizedToLowercaseOnBothPaths() {
+        long userId = createUser(null);
+        String puid = UUID.randomUUID().toString();
+
+        UserIdentity saved = repository.insert(identity(userId, "GITHUB", puid));
+        assertThat(saved.provider()).isEqualTo("github");
+
+        assertThat(repository.findByProviderAndProviderUserId("GitHub", puid))
+                .hasValueSatisfying(found -> assertThat(found.userId()).isEqualTo(userId));
     }
 }

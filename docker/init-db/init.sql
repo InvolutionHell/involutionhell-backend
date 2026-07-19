@@ -32,6 +32,21 @@ CREATE TABLE IF NOT EXISTS user_follows (
 CREATE INDEX IF NOT EXISTS idx_user_follows_followee
     ON user_follows(followee_id, created_at DESC);
 
+-- 登录身份（user_identities）—— 与 schema.sql 保持一致
+-- 注意 init.sql 版的 user_accounts 没有 github_id 列（全新库无存量），故不含回填。
+CREATE TABLE IF NOT EXISTS user_identities (
+    id                   BIGSERIAL    PRIMARY KEY,
+    user_id              BIGINT       NOT NULL REFERENCES user_accounts(id) ON DELETE CASCADE,
+    provider             VARCHAR(32)  NOT NULL CHECK (provider = lower(provider)),
+    provider_user_id     VARCHAR(255) NOT NULL,
+    email_at_link        VARCHAR(255),
+    display_name_at_link VARCHAR(255),
+    linked_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    last_login_at        TIMESTAMPTZ,
+    UNIQUE (provider, provider_user_id),
+    UNIQUE (user_id, provider)
+);
+
 -- Prisma tables (frontend/prisma/schema.prisma)
 
 -- users table

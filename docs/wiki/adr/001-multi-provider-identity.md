@@ -49,8 +49,12 @@ Sa-Token 迁移时被塌缩掉了。）
   canonical URL 和贡献归属都假设 1:1，放开是一句 DROP，收紧要洗数据。
 - FK `ON DELETE CASCADE` — 删号不留幽灵身份。注意"无 FK"惯例只适用于 Prisma
   跨系统引用（根 CLAUDE.md），后端表引后端表照常加 FK。
-- 启动回填用无冲突目标的 `ON CONFLICT DO NOTHING` — schema.sql 每次启动执行，
-  必须幂等（有回归测试原样执行两遍验证）。
+- 启动回填用无冲突目标的 `ON CONFLICT DO NOTHING` — schema.sql 在
+  `SPRING_SQL_INIT_MODE=always` 的环境随启动执行（默认 never），必须幂等
+  （回归测试从 classpath 提取真实语句执行两遍验证）。全新库走
+  docker/init-db/init.sql（三处 schema 同步惯例，见 INV-004 的 user_follows 教训）。
+  回填只治"行缺失"不治"值变化"；**M2 解绑 github 必须同时清空 github_id 列**，
+  否则下次执行回填会静默复活已撤销的绑定。
 
 **GitHub 的特殊性下沉到业务层**：认证层 provider 平权；贡献归属、排行榜、认领档案
 查 `provider = 'github'`。文档是 git-based 是业务事实，不泄漏进认证设计。
@@ -58,7 +62,8 @@ Sa-Token 迁移时被塌缩掉了。）
 ## 统一登录 / 绑定流程与 state 协议
 
 **原则：state 是不透明的一次性 nonce，不携带任何身份信息；callback 永远不信任
-state 里的用户身份**（登记为安全不变量 INV-006，随 M1 落进 SecurityInvariantsTests）。
+state 里的用户身份**（登记为安全不变量 INV-007，随 M1 落进 SecurityInvariantsTests；
+INV-006 已被"付费 LLM 端点限流"占用，编号按 SECURITY.md 流水规则永不复用）。
 真实信息挂在服务端 intent 记录上（nonce 为 key，Caffeine 存储，5 分钟 TTL）。
 
 - **登录**（无会话）：`/oauth/render/{provider}` 生成 nonce → 存 intent{mode=login} →
@@ -105,7 +110,7 @@ state 里的用户身份**（登记为安全不变量 INV-006，随 M1 落进 Se
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | M0 | 建表 + 幂等回填 + repository | ✅ 本 ADR 随附 PR |
-| M1 | `loginByProvider` 统一流程 + state/cookie 硬化 + INV-006 测试；`github_id` 双写 | 待做 |
+| M1 | `loginByProvider` 统一流程 + state/cookie 硬化 + INV-007 测试；`github_id` 双写 | 待做 |
 | M2 | 绑定/解绑 + 设置页 UI + 确认页 | 待做 |
 | M3 | Discord 上线；`/u/`、follows 查询改走 identities | 待做 |
 | M4 | identities 稳定一个版本后删 `github_id` 列（单独拆期，保回滚路径） | 待做 |

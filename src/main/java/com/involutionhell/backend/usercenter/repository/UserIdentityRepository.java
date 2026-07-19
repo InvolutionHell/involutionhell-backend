@@ -19,6 +19,9 @@ public interface UserIdentityRepository {
      * 插入新身份并返回带生成 id 的记录。
      * 撞 UNIQUE（身份已绑他人 / 该账号同 provider 已有身份）由调用方捕获
      * DuplicateKeyException 处理——那是业务分支（提示"已被绑定"），不是异常路径。
+     * 传入的 linkedAt / lastLoginAt 会被忽略：linked_at 由 DB DEFAULT NOW() 生成，
+     * last_login_at 只经 touchLastLogin 更新。需要保留历史时间戳的导入场景（若出现）
+     * 得加专门方法，不复用本方法。
      */
     UserIdentity insert(UserIdentity identity);
 
