@@ -68,6 +68,12 @@ public interface UserAccountRepository {
     void clearGithubId(Long userId);
 
     /**
+     * 仅当 github_id 当前为空时写入。用于"先非 github 注册、后 github 登录挂靠"时补列，
+     * 不覆盖已有值。撞 UNIQUE(github_id) 时抛异常由调用方按"不阻断登录"处理。
+     */
+    void setGithubIdIfAbsent(Long userId, Long githubId);
+
+    /**
      * 查询指定用户的偏好 Map，用户不存在时抛 IllegalArgumentException。
      */
     Map<String, Object> findPreferences(Long userId);

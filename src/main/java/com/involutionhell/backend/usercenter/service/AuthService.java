@@ -148,6 +148,16 @@ public class AuthService {
                 UserAccount target = matches.get(0);
                 log.info("verified-email 自动关联：provider={} 的已验证邮箱匹配到已有账号 id={}，挂靠不建新号",
                         provider, target.id());
+                // 反向场景（先 Discord 注册、后 GitHub 登录挂靠）：目标账号 github_id 可能为空。
+                // M1-M3 双写期贡献归属 / /u/{githubId} 都靠这列，补上（仅当为空，不覆盖）。
+                // 写失败不阻断登录：撞 UNIQUE(github_id) 等极端情况记日志即可。
+                if ("github".equals(provider) && githubId != null && target.githubId() == null) {
+                    try {
+                        userAccountRepository.setGithubIdIfAbsent(target.id(), githubId);
+                    } catch (Exception e) {
+                        log.warn("挂靠时补写 github_id 失败（userId={}）", target.id(), e);
+                    }
+                }
                 return target;
             }
             if (matches.size() > 1) {

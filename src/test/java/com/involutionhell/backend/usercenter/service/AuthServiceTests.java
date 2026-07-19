@@ -528,6 +528,26 @@ class AuthServiceTests {
         verify(userCenterService).createUser(any());
     }
 
+    @Test
+    void githubLoginAutoLinksToNonGithubAccountAndBackfillsGithubId() {
+        // 反向：先 Discord 注册（账号 github_id=null），后用 GitHub 同邮箱登录 → 挂靠 + 补 github_id
+        AuthUser gh = githubUser("555", "Nick", null, "alice@example.com");
+        UserAccount discordFirst = new UserAccount(50L, "discord_snow-x", "hash", "显示名", true,
+                Set.of("user"), Set.of(), null, "alice@example.com", null /*github_id null*/, null);
+        when(userCenterService.findByUsername("github_555")).thenReturn(Optional.empty());
+        when(userAccountRepository.findByEmail("alice@example.com"))
+                .thenReturn(java.util.List.of(discordFirst));
+
+        try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
+            stpUtil.when(StpUtil::getTokenName).thenReturn("satoken");
+            stpUtil.when(StpUtil::getTokenValue).thenReturn("tok");
+            authService.loginByProvider("github", gh);
+        }
+
+        verify(userCenterService, org.mockito.Mockito.never()).createUser(any());
+        verify(userAccountRepository).setGithubIdIfAbsent(50L, 555L);
+    }
+
     // =============================================
     // logout() 和 currentUser()
     // =============================================
