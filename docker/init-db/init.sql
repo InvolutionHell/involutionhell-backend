@@ -1,14 +1,22 @@
 -- Init DB script for local development
 
 -- backend/src/main/resources/schema.sql
+-- 列必须与 schema.sql 的 user_accounts 完全一致：init.sql 只在数据卷首次创建时
+-- 跑一次，schema.sql 的 CREATE TABLE IF NOT EXISTS 对已存在的表是 no-op、补不上
+-- 缺列。这里少列会让 github 登录（INSERT 列出 avatar_url/email/github_id/
+-- preferences）和 user_identities 回填（读 github_id）在全新库上直接失败。
 CREATE TABLE IF NOT EXISTS user_accounts (
-    id            BIGSERIAL PRIMARY KEY,
+    id            BIGSERIAL    PRIMARY KEY,
     username      VARCHAR(255) NOT NULL UNIQUE,
     password_hash VARCHAR(255) NOT NULL,
     display_name  VARCHAR(255),
     enabled       BOOLEAN      NOT NULL DEFAULT TRUE,
     roles         TEXT         NOT NULL DEFAULT '',
-    permissions   TEXT         NOT NULL DEFAULT ''
+    permissions   TEXT         NOT NULL DEFAULT '',
+    avatar_url    VARCHAR(500),
+    email         VARCHAR(255),
+    github_id     BIGINT       UNIQUE,
+    preferences   JSONB        NOT NULL DEFAULT '{}'::jsonb
 );
 
 -- Default seeds for user_accounts
@@ -33,7 +41,8 @@ CREATE INDEX IF NOT EXISTS idx_user_follows_followee
     ON user_follows(followee_id, created_at DESC);
 
 -- 登录身份（user_identities）—— 与 schema.sql 保持一致
--- 注意 init.sql 版的 user_accounts 没有 github_id 列（全新库无存量），故不含回填。
+-- 不含 schema.sql 里的 github_id 回填：全新库的种子账号（admin/alice/auditor）都无
+-- github_id，回填是 0 行；真有存量时 schema.sql 会在启动（mode=always）时回填。
 CREATE TABLE IF NOT EXISTS user_identities (
     id                   BIGSERIAL    PRIMARY KEY,
     user_id              BIGINT       NOT NULL REFERENCES user_accounts(id) ON DELETE CASCADE,
