@@ -59,13 +59,13 @@ public class OAuthController {
     private AuthRequest authRequestFor(String provider) {
         return switch (provider) {
             case "github" -> {
-                requireConfigured("github", githubClientId);
+                requireConfigured("github", githubClientId, githubClientSecret);
                 yield new AuthGithubRequest(AuthConfig.builder()
                         .clientId(githubClientId).clientSecret(githubClientSecret)
                         .redirectUri(githubRedirectUri).build());
             }
             case "discord" -> {
-                requireConfigured("discord", discordClientId);
+                requireConfigured("discord", discordClientId, discordClientSecret);
                 yield new AuthDiscordRequest(AuthConfig.builder()
                         .clientId(discordClientId).clientSecret(discordClientSecret)
                         .redirectUri(discordRedirectUri).build());
@@ -74,10 +74,21 @@ public class OAuthController {
         };
     }
 
-    private void requireConfigured(String provider, String clientId) {
-        if (clientId == null || clientId.isBlank()) {
-            throw new IllegalArgumentException(provider + " OAuth 未配置（缺 client-id）");
+    // client-id 与 secret 都要有：只配一半时提前挡在 oauth_provider（配置问题），
+    // 而不是让 token 交换阶段以 oauth_failed 失败——后者会误导成"provider 侧拒绝"。
+    private void requireConfigured(String provider, String clientId, String clientSecret) {
+        if (clientId == null || clientId.isBlank() || clientSecret == null || clientSecret.isBlank()) {
+            throw new IllegalArgumentException(provider + " OAuth 未配置（缺 client-id 或 secret）");
         }
+    }
+
+    // 仅用于排查日志：redirect_uri 是公开信息，不含密钥。
+    private String redirectUriOf(String provider) {
+        return switch (provider) {
+            case "github" -> githubRedirectUri;
+            case "discord" -> discordRedirectUri;
+            default -> "(n/a)";
+        };
     }
 
     // OAuth state 双提交 cookie 名。INV-007：callback 校验 URL state 必须等于此 cookie，
@@ -98,6 +109,7 @@ public class OAuthController {
             response.sendRedirect(frontEndUrl + "/login?error=oauth_provider");
             return;
         }
+        log.info("[OAuth] render provider={}, redirect_uri={}", provider, redirectUriOf(provider));
         String state = me.zhyd.oauth.utils.AuthStateUtils.createState();
         // state 同时种进 httpOnly cookie。SameSite=Lax 是关键：callback 是 provider 发起的
         // 跨站顶级导航，Strict 会剥掉 cookie；Lax 恰好在顶级 GET 导航时携带。
