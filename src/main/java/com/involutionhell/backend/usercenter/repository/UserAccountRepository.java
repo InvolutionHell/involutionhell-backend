@@ -28,6 +28,13 @@ public interface UserAccountRepository {
     Optional<UserAccount> findByGithubId(Long githubId);
 
     /**
+     * 按邮箱（大小写不敏感）查询用户。用于第三方登录的"已验证邮箱自动关联"。
+     * 返回 List 而非 Optional：email 无 UNIQUE 约束，调用方需自行判断"恰好一个"才关联，
+     * 多个匹配时保守不关联。
+     */
+    List<UserAccount> findByEmail(String email);
+
+    /**
      * 查询所有用户。
      */
     List<UserAccount> findAll();
