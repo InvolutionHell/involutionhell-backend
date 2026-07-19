@@ -57,6 +57,29 @@ class OAuthControllerIntegrationTests extends AbstractWebIntegrationTest {
                 .contains("redirect_uri");
     }
 
+    @Test
+    void renderUnknownProviderRedirectsToProviderError() throws Exception {
+        MvcResult result = mockMvc.perform(get("/oauth/render/myspace"))
+                .andExpect(status().is3xxRedirection())
+                .andReturn();
+        assertThat(result.getResponse().getRedirectedUrl())
+                .as("未知 provider 应重定向到 error=oauth_provider，而非 500")
+                .isNotNull()
+                .endsWith("/login?error=oauth_provider");
+    }
+
+    @Test
+    void renderUnconfiguredDiscordRedirectsToProviderError() throws Exception {
+        // 测试环境未配 AUTH_DISCORD_ID → discord client-id 为空 → 走 oauth_provider 分支
+        MvcResult result = mockMvc.perform(get("/oauth/render/discord"))
+                .andExpect(status().is3xxRedirection())
+                .andReturn();
+        assertThat(result.getResponse().getRedirectedUrl())
+                .as("未配置的 discord 应重定向到 error=oauth_provider，不影响启动")
+                .isNotNull()
+                .endsWith("/login?error=oauth_provider");
+    }
+
     // =============================================
     // GET /api/auth/callback/github — OAuth 回调
     // =============================================

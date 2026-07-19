@@ -1,6 +1,7 @@
 package com.involutionhell.backend.usercenter.controller;
 
 import com.involutionhell.backend.usercenter.dto.LoginResponse;
+import com.involutionhell.backend.usercenter.oauth.AuthDiscordRequest;
 import com.involutionhell.backend.usercenter.service.AuthService;
 import me.zhyd.oauth.config.AuthConfig;
 import me.zhyd.oauth.model.AuthCallback;
@@ -12,29 +13,39 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 
+/**
+ * 第三方 OAuth 登录入口。provider 无关（github 内置 / discord 自定义 source）；
+ * github 的特殊性下沉到 AuthService 的业务层。端点路径带 {provider}，github 的
+ * /api/auth/callback/github 与 OAuth App 注册的回调 URL 保持一致。
+ */
 @RestController
 public class OAuthController {
 
     private static final Logger log = LoggerFactory.getLogger(OAuthController.class);
 
-    @Value("${justauth.type.github.client-id}")
+    @Value("${justauth.type.github.client-id:}")
     private String githubClientId;
-
-    @Value("${justauth.type.github.client-secret}")
+    @Value("${justauth.type.github.client-secret:}")
     private String githubClientSecret;
-
-    @Value("${justauth.type.github.redirect-uri}")
+    @Value("${justauth.type.github.redirect-uri:}")
     private String githubRedirectUri;
+
+    @Value("${justauth.type.discord.client-id:}")
+    private String discordClientId;
+    @Value("${justauth.type.discord.client-secret:}")
+    private String discordClientSecret;
+    @Value("${justauth.type.discord.redirect-uri:}")
+    private String discordRedirectUri;
 
     @Value("${AUTH_URL:http://localhost:3000}")
     private String frontEndUrl;
 
-    // 注入认证服务，用于查询/注册用户并执行 Sa-Token 登录
     private final AuthService authService;
 
     public OAuthController(AuthService authService) {
@@ -42,14 +53,31 @@ public class OAuthController {
     }
 
     /**
-     * 获取 GitHub 授权请求对象
+     * 按 provider 造 AuthRequest。未知或未配置 → IllegalArgumentException，
+     * 由调用方兜底重定向到错误页（不 500）。
      */
-    private AuthRequest getAuthRequest() {
-        return new AuthGithubRequest(AuthConfig.builder()
-                .clientId(githubClientId)
-                .clientSecret(githubClientSecret)
-                .redirectUri(githubRedirectUri)
-                .build());
+    private AuthRequest authRequestFor(String provider) {
+        return switch (provider) {
+            case "github" -> {
+                requireConfigured("github", githubClientId);
+                yield new AuthGithubRequest(AuthConfig.builder()
+                        .clientId(githubClientId).clientSecret(githubClientSecret)
+                        .redirectUri(githubRedirectUri).build());
+            }
+            case "discord" -> {
+                requireConfigured("discord", discordClientId);
+                yield new AuthDiscordRequest(AuthConfig.builder()
+                        .clientId(discordClientId).clientSecret(discordClientSecret)
+                        .redirectUri(discordRedirectUri).build());
+            }
+            default -> throw new IllegalArgumentException("不支持的 OAuth provider: " + provider);
+        };
+    }
+
+    private void requireConfigured(String provider, String clientId) {
+        if (clientId == null || clientId.isBlank()) {
+            throw new IllegalArgumentException(provider + " OAuth 未配置（缺 client-id）");
+        }
     }
 
     // OAuth state 双提交 cookie 名。INV-007：callback 校验 URL state 必须等于此 cookie，
@@ -58,18 +86,22 @@ public class OAuthController {
     private static final int STATE_COOKIE_MAX_AGE_SECONDS = 300;
 
     /**
-     * 构建授权链接并重定向到 GitHub
-     * 前端直接跳转到后端此地址（NEXT_PUBLIC_BACKEND_URL + /oauth/render/github）发起登录
+     * 构建授权链接并重定向到 provider。前端跳到 /oauth/render/{provider} 发起登录。
      */
-    @GetMapping("/oauth/render/github")
-    public void renderAuth(HttpServletResponse response) throws IOException {
-        // 打印当前使用的 GitHub Client ID 和 redirect_uri，便于排查 token 配置问题
-        log.info("[OAuth] GitHub Client ID = {}, redirect_uri = {}", githubClientId, githubRedirectUri);
+    @GetMapping("/oauth/render/{provider}")
+    public void renderAuth(@PathVariable String provider, HttpServletResponse response) throws IOException {
+        AuthRequest authRequest;
+        try {
+            authRequest = authRequestFor(provider);
+        } catch (IllegalArgumentException e) {
+            log.warn("[OAuth] render 未知/未配置 provider={}: {}", provider, e.getMessage());
+            response.sendRedirect(frontEndUrl + "/login?error=oauth_provider");
+            return;
+        }
         String state = me.zhyd.oauth.utils.AuthStateUtils.createState();
-        // 把 state 同时种进 httpOnly cookie。SameSite=Lax 是关键：callback 是 github.com
-        // 发起的跨站顶级导航，Strict 会剥掉 cookie；Lax 恰好在顶级 GET 导航时携带。
+        // state 同时种进 httpOnly cookie。SameSite=Lax 是关键：callback 是 provider 发起的
+        // 跨站顶级导航，Strict 会剥掉 cookie；Lax 恰好在顶级 GET 导航时携带。
         response.addHeader("Set-Cookie", buildStateCookie(state, STATE_COOKIE_MAX_AGE_SECONDS));
-        AuthRequest authRequest = getAuthRequest();
         response.sendRedirect(authRequest.authorize(state));
     }
 
@@ -93,54 +125,53 @@ public class OAuthController {
     }
 
     /**
-     * GitHub OAuth 回调地址，路径与 GitHub OAuth App 注册保持一致（/api/auth/callback/github）
-     * GitHub → localhost:3000/api/auth/callback/github → Next.js rewrite → localhost:8080/api/auth/callback/github
+     * OAuth 回调。github 的路径 /api/auth/callback/github 与 OAuth App 注册一致；
+     * discord 走 /api/auth/callback/discord。
      */
-    @GetMapping("/api/auth/callback/github")
-    public void login(@RequestParam(required = false) String code,
+    @GetMapping("/api/auth/callback/{provider}")
+    public void login(@PathVariable String provider,
+                      @RequestParam(required = false) String code,
                       @RequestParam(required = false) String state,
                       jakarta.servlet.http.HttpServletRequest request,
                       HttpServletResponse response) throws IOException {
-        // 参数缺失时直接走失败分支：若 @RequestParam 保持 required=true，Spring 在进入方法前
-        // 就抛 MissingServletRequestParameterException → 默认 500 白屏；
-        // 手动 null check 能把 "用户直接访问 / GitHub 异常回调" 统一兜底到前端错误页。
+        // 参数缺失（用户直接访问 / provider 异常回调）统一兜底到前端错误页。
         if (code == null || state == null) {
-            log.warn("[OAuth] GitHub callback missing code/state (direct access?), redirecting to error page");
+            log.warn("[OAuth] {} callback missing code/state (direct access?), redirecting", provider);
             response.sendRedirect(frontEndUrl + "/login?error=oauth_failed");
             return;
         }
 
         // INV-007：state 必须等于本次 render 种下的 cookie（双提交校验）。缺失/不匹配
-        // 即拒绝，且在换 token 之前——不给伪造 state 触发登录的机会，也不白打 GitHub。
+        // 即拒绝，且在换 token 之前——不给伪造 state 触发登录的机会，也不白打 provider。
         String cookieState = readStateCookie(request);
-        // 用完即清（无论后续成败），避免 cookie 泄漏 / 复用。
-        response.addHeader("Set-Cookie", buildStateCookie("", 0));
+        response.addHeader("Set-Cookie", buildStateCookie("", 0)); // 用完即清
         if (cookieState == null || !cookieState.equals(state)) {
-            log.warn("[OAuth] state 与 cookie 不匹配（可能的 CSRF 或 cookie 丢失），拒绝登录");
+            log.warn("[OAuth] {} state 与 cookie 不匹配（CSRF 或 cookie 丢失），拒绝", provider);
             response.sendRedirect(frontEndUrl + "/login?error=oauth_state");
+            return;
+        }
+
+        AuthRequest authRequest;
+        try {
+            authRequest = authRequestFor(provider);
+        } catch (IllegalArgumentException e) {
+            log.warn("[OAuth] callback 未知/未配置 provider={}: {}", provider, e.getMessage());
+            response.sendRedirect(frontEndUrl + "/login?error=oauth_provider");
             return;
         }
 
         AuthCallback callback = new AuthCallback();
         callback.setCode(code);
         callback.setState(state);
-        AuthRequest authRequest = getAuthRequest();
         AuthResponse<?> authResponse = authRequest.login(callback);
-        
+
         if (authResponse.ok()) {
             AuthUser authUser = (AuthUser) authResponse.getData();
-
-            // 调用 AuthService.loginByGithub()：查询或自动注册用户，然后执行 Sa-Token 登录
-            // 返回的 LoginResponse 包含 tokenName、tokenValue 和用户视图
-            LoginResponse loginResponse = authService.loginByGithub(authUser);
-
-            // 登录成功后重定向到前端，将 token 放在 URL fragment（#token=）中传给前端
-            // fragment 不会出现在服务器日志和 Referer 头中，避免 token 泄露
-            // 前端读取 #token= 参数后存入 localStorage，并清除 URL 中的 fragment
-            String redirectUrl = frontEndUrl + "/#token=" + loginResponse.tokenValue();
-            response.sendRedirect(redirectUrl);
+            LoginResponse loginResponse = authService.loginByProvider(provider, authUser);
+            // token 放 URL fragment（#token=），不进服务器日志/Referer；前端读入 localStorage
+            response.sendRedirect(frontEndUrl + "/#token=" + loginResponse.tokenValue());
         } else {
-            // 登录失败，重定向回前端并带上错误信息
+            log.warn("[OAuth] {} 登录失败: {}", provider, authResponse.getMsg());
             response.sendRedirect(frontEndUrl + "/login?error=oauth_failed");
         }
     }
