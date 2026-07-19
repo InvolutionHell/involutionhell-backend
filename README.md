@@ -118,6 +118,20 @@ docker compose up -d postgres
 > [!TIP]
 > 生产环境用另一个 OAuth App（仓库维护者持有，回调注册的是 `https://involutionhell.com/...`），跟本地这套互不干扰。本地 `.env` 只放你自己的 dev key。
 
+#### （可选）配置 Discord 登录
+
+同 GitHub，每个开发者用自己的 Discord App：
+
+1. [Discord Developer Portal](https://discord.com/developers/applications) → **New Application**
+2. **OAuth2 → Redirects** 加 `http://localhost:3010/api/auth/callback/discord`（与 `${AUTH_URL}/api/auth/callback/discord` 对齐）
+3. OAuth2 → 复制 **Client ID** 和 **Client Secret**，填到 `.env`：
+   ```
+   AUTH_DISCORD_ID=...
+   AUTH_DISCORD_SECRET=...
+   ```
+
+不填就不显示 Discord 登录、后端也不报错（`/oauth/render/discord` 会重定向到 `?error=oauth_provider`）。scope 由后端固定为 `identify email`，无需在 Portal 额外设置。
+
 ### 4. 启动后端服务
 按以下任一方式启动:
 

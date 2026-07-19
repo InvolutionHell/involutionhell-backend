@@ -7,6 +7,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.involutionhell.backend.support.AbstractWebIntegrationTest;
 import org.junit.jupiter.api.Test;
+import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MvcResult;
 
 /**
@@ -22,7 +23,14 @@ import org.springframework.test.web.servlet.MvcResult;
  *
  * callback 成功路径（需要真实 GitHub code + state）超出集成测试范围，
  * 该路径的业务逻辑已由 AuthServiceTests.loginByGithub*() 系列单元测试覆盖。
+ *
+ * 强制 discord 未配置：否则本机 .env 里若有真实 AUTH_DISCORD_ID（被 source 进环境），
+ * "未配置 discord → oauth_provider" 这条断言会因 discord 实际已配置而失败。
  */
+@TestPropertySource(properties = {
+        "justauth.type.discord.client-id=",
+        "justauth.type.discord.client-secret="
+})
 class OAuthControllerIntegrationTests extends AbstractWebIntegrationTest {
 
     // =============================================
@@ -55,6 +63,29 @@ class OAuthControllerIntegrationTests extends AbstractWebIntegrationTest {
         assertThat(location)
                 .as("授权 URL 必须携带 redirect_uri 参数")
                 .contains("redirect_uri");
+    }
+
+    @Test
+    void renderUnknownProviderRedirectsToProviderError() throws Exception {
+        MvcResult result = mockMvc.perform(get("/oauth/render/myspace"))
+                .andExpect(status().is3xxRedirection())
+                .andReturn();
+        assertThat(result.getResponse().getRedirectedUrl())
+                .as("未知 provider 应重定向到 error=oauth_provider，而非 500")
+                .isNotNull()
+                .endsWith("/login?error=oauth_provider");
+    }
+
+    @Test
+    void renderUnconfiguredDiscordRedirectsToProviderError() throws Exception {
+        // 测试环境未配 AUTH_DISCORD_ID → discord client-id 为空 → 走 oauth_provider 分支
+        MvcResult result = mockMvc.perform(get("/oauth/render/discord"))
+                .andExpect(status().is3xxRedirection())
+                .andReturn();
+        assertThat(result.getResponse().getRedirectedUrl())
+                .as("未配置的 discord 应重定向到 error=oauth_provider，不影响启动")
+                .isNotNull()
+                .endsWith("/login?error=oauth_provider");
     }
 
     // =============================================

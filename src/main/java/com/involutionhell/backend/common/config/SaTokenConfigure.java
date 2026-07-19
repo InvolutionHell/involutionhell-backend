@@ -20,8 +20,8 @@ public class SaTokenConfigure implements WebMvcConfigurer {
                 .match("/**")                              // 拦截所有路由
                 .notMatch("/auth/login")                   // 账号密码登录
                 .notMatch("/auth/register")                // 注册
-                .notMatch("/oauth/render/github")          // GitHub OAuth 授权发起
-                .notMatch("/api/auth/callback/github")     // GitHub OAuth 回调（路径与 OAuth App 注册保持一致）
+                .notMatch("/oauth/render/*")               // OAuth 授权发起（github / discord / ...，未登录才需要）
+                .notMatch("/api/auth/callback/*")          // OAuth 回调（github 路径与 OAuth App 注册保持一致）
                 .notMatch("/analytics/top-docs")           // 文档热榜公开接口
                 .notMatch("/analytics/events/summary")     // 事件聚合摘要，公开只读接口
                 .notMatch("/analytics/events")             // 浏览器埋点写入，匿名也放行（登录用户通过 satoken header 识别）

@@ -113,5 +113,6 @@ INV-006 已被"付费 LLM 端点限流"占用，编号按 SECURITY.md 流水规�
 | M1 | `loginByProvider` 统一流程（username 主查 + identity 双写） + state/cookie 硬化 + INV-007；`github_id` 列双写沿用 | ✅ 本 PR |
 | M2a | 解绑 + 列表后端（解绑锁死防护 + github 解绑清 github_id 列） | ✅ 本 PR |
 | M2b | 绑定流程（intent store + callback 分支）后端 + 设置页前端 UI | 待做 |
-| M3 | Discord 上线；`/u/`、follows 查询改走 identities | 待做 |
+| M3 后端 | Discord provider（自定义 AuthSource）+ OAuth 端点泛化为 {provider} | ✅ 本 PR |
+| M3 前端 | 登录页 Discord 按钮 + 设置页身份 UI（另 repo，另 PR） | 待做 |
 | M4 | identities 稳定一个版本后删 `github_id` 列（单独拆期，保回滚路径） | 待做 |
