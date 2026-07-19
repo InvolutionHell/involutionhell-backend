@@ -25,6 +25,22 @@ MERGE INTO user_accounts (username, password_hash, display_name, enabled, roles,
     KEY (username)
     VALUES ('auditor', '$2b$10$/1OfzhrA6CITrjJsDbzk.uMLq6cHa/iOP./wL2BAPo9t7QRq7Ca5W', 'Auditor', TRUE, 'auditor', 'user:profile:read,user:center:read');
 
+-- 登录身份表（与生产 schema.sql 的 user_identities 对应；TIMESTAMPTZ 用 TIMESTAMP 代替）。
+-- 生产的启动回填（INSERT...SELECT...ON CONFLICT DO NOTHING）这里不放：种子账号无 github_id，
+-- 回填幂等性由 UserIdentityRepositoryTests 在 H2 上直接执行该语句验证。
+CREATE TABLE IF NOT EXISTS user_identities (
+    id                   BIGSERIAL    PRIMARY KEY,
+    user_id              BIGINT       NOT NULL REFERENCES user_accounts(id) ON DELETE CASCADE,
+    provider             VARCHAR(32)  NOT NULL CHECK (provider = lower(provider)),
+    provider_user_id     VARCHAR(255) NOT NULL,
+    email_at_link        VARCHAR(255),
+    display_name_at_link VARCHAR(255),
+    linked_at            TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_login_at        TIMESTAMP,
+    UNIQUE (provider, provider_user_id),
+    UNIQUE (user_id, provider)
+);
+
 -- Events 相关表（测试用 H2 语法）。JSONB 用 VARCHAR 代替，与 user_accounts.preferences 的策略一致
 CREATE TABLE IF NOT EXISTS events (
     id             BIGSERIAL    PRIMARY KEY,

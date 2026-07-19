@@ -88,6 +88,18 @@ cp .env.example .env
 docker compose up -d postgres
 ```
 
+> [!IMPORTANT]
+> **两条建表路径，别混淆**：`docker/init-db/init.sql` 只在数据卷**首次创建**时跑一次；
+> 之后的 schema 演进靠后端启动时执行 `backend/src/main/resources/schema.sql`
+> （需 `SPRING_SQL_INIT_MODE=always`，`.env.example` 默认即是，**别改成 never**）。
+> 两个文件的表结构必须保持一致——`schema.sql` 的 `CREATE TABLE IF NOT EXISTS`
+> 补不上已存在表的缺列。
+>
+> **pull 到新增表/列后**如果遇到 `relation "xxx" does not exist` 或缺列报错：
+> 确认 `SPRING_SQL_INIT_MODE=always` 后重启后端即可（schema.sql 幂等 reconcile）；
+> 若本地库结构已错乱，`docker compose down -v && docker compose up -d postgres`
+> 重建卷从 init.sql 干净初始化（会清空本地数据，仅本地开发库）。
+
 ### 3. 配置 GitHub OAuth（首次必做）
 后端的登录走 GitHub OAuth，**每个开发者要用自己的 OAuth App**——不要复制别人的 Client ID，回调 URL 不会匹配，GitHub 会直接拒绝：
 

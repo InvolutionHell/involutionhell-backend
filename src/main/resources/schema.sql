@@ -67,6 +67,49 @@ ON CONFLICT (username) DO UPDATE SET
 -- API 层禁止通过 /api/admin/users 接口授予或撤销 superadmin（防误操作锁死后台）。
 
 -- =============================================================================
+-- 登录身份（user_identities）
+-- =============================================================================
+-- 一个账号可挂多个第三方登录方式（github / discord / google / ...），认证层
+-- provider 平权；GitHub 的特殊性（贡献归属）只体现在业务层 provider='github'
+-- 的查询里。设计决策与 OAuth state 防护协议见 docs/wiki/adr/001-multi-provider-identity.md。
+--
+-- 约束语义：
+--   UNIQUE (provider, provider_user_id) —— 一个第三方身份只能绑一个账号
+--   UNIQUE (user_id, provider)          —— 一个账号同一 provider 只能绑一个身份
+--     （/u/{githubId} canonical URL 与贡献归属都假设 1:1，放开是 DROP CONSTRAINT
+--       一句话，收紧要洗数据，故默认收紧）
+--   CHECK (provider = lower(provider))  —— provider 规范化小写，防大小写分裂
+--   FK ON DELETE CASCADE               —— 删号不留幽灵身份（否则登录路径会命中
+--     不存在的账号）
+CREATE TABLE IF NOT EXISTS user_identities (
+    id                   BIGSERIAL    PRIMARY KEY,
+    user_id              BIGINT       NOT NULL REFERENCES user_accounts(id) ON DELETE CASCADE,
+    provider             VARCHAR(32)  NOT NULL CHECK (provider = lower(provider)),
+    provider_user_id     VARCHAR(255) NOT NULL,
+    email_at_link        VARCHAR(255),
+    display_name_at_link VARCHAR(255),
+    linked_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    last_login_at        TIMESTAMPTZ,
+    UNIQUE (provider, provider_user_id),
+    UNIQUE (user_id, provider)
+);
+
+-- 存量 GitHub 身份回填。本文件在 SPRING_SQL_INIT_MODE=always 时随启动执行
+-- （默认 never，见 application.properties），ON CONFLICT 无冲突目标保证重跑幂等。
+-- 边界（详见 ADR-001）：
+--   1. 只治"行缺失"，不治"值变化"——github_id 改过值的账号，identity 行不会跟着
+--      变（撞 UNIQUE(user_id,provider) 被跳过），值同步是 M1 双写逻辑的责任；
+--   2. 只要 github_id 列仍有值，删除的 github identity 行会在下次执行时被重新
+--      插入——因此 M2 解绑 github 时必须同时清空 user_accounts.github_id，
+--      否则重启会静默复活用户已撤销的绑定。
+-- github_id 列在 user_identities 稳定运行一个版本前保持双写（M1-M3，M4 删列）。
+INSERT INTO user_identities (user_id, provider, provider_user_id)
+SELECT id, 'github', CAST(github_id AS VARCHAR)
+FROM user_accounts
+WHERE github_id IS NOT NULL
+ON CONFLICT DO NOTHING;
+
+-- =============================================================================
 -- 关注关系（user_follows）
 -- =============================================================================
 -- FollowService 用 (follower_id, followee_id, created_at) 三列读写。
