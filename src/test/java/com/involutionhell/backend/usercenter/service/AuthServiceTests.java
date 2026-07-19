@@ -57,6 +57,25 @@ class AuthServiceTests {
                         org.mockito.ArgumentMatchers.anyString(),
                         org.mockito.ArgumentMatchers.anyString()))
                 .thenReturn(Optional.empty());
+        // 默认无邮箱匹配 → 走建新号路径；自动关联测试单独覆盖。
+        org.mockito.Mockito.lenient()
+                .when(userAccountRepository.findByEmail(org.mockito.ArgumentMatchers.anyString()))
+                .thenReturn(java.util.List.of());
+    }
+
+    /**
+     * 造 Discord AuthUser（带 rawUserInfo.verified，供已验证邮箱自动关联测试）。
+     */
+    private AuthUser discordUser(String uuid, String email, boolean emailVerified) {
+        AuthUser user = mock(AuthUser.class);
+        when(user.getUuid()).thenReturn(uuid);
+        when(user.getNickname()).thenReturn("dc-" + uuid);
+        when(user.getAvatar()).thenReturn(null);
+        when(user.getEmail()).thenReturn(email);
+        com.alibaba.fastjson.JSONObject raw = new com.alibaba.fastjson.JSONObject();
+        raw.put("verified", emailVerified);
+        when(user.getRawUserInfo()).thenReturn(raw);
+        return user;
     }
 
     // =============================================
@@ -425,6 +444,108 @@ class AuthServiceTests {
             LoginResponse response = authService.loginByGithub(ghUser);
             assertThat(response.tokenValue()).isEqualTo("token-xyz");
         }
+    }
+
+    // =============================================
+    // loginByProvider() - 已验证邮箱自动关联（防分叉）
+    // =============================================
+
+    @Test
+    void verifiedEmailAutoLinksToExistingAccountInsteadOfForking() {
+        // Discord 首次登录，邮箱已验证且匹配到已有账号 → 挂靠，不建新号
+        AuthUser dc = discordUser("snow-1", "alice@example.com", true);
+        UserAccount existing = enabledUser(10L, "github_12345", "hash");
+        when(userCenterService.findByUsername("discord_snow-1")).thenReturn(Optional.empty());
+        when(userAccountRepository.findByEmail("alice@example.com"))
+                .thenReturn(java.util.List.of(existing));
+
+        try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
+            stpUtil.when(StpUtil::getTokenName).thenReturn("satoken");
+            stpUtil.when(StpUtil::getTokenValue).thenReturn("tok");
+            LoginResponse res = authService.loginByProvider("discord", dc);
+            assertThat(res.user().username()).isEqualTo("github_12345"); // 登入的是已有账号
+        }
+
+        // 不建新号；只给已有账号挂上 discord 身份
+        verify(userCenterService, org.mockito.Mockito.never()).createUser(any());
+        org.mockito.ArgumentCaptor<com.involutionhell.backend.usercenter.model.UserIdentity> cap =
+                org.mockito.ArgumentCaptor.forClass(com.involutionhell.backend.usercenter.model.UserIdentity.class);
+        verify(userIdentityRepository).insert(cap.capture());
+        assertThat(cap.getValue().userId()).isEqualTo(10L);
+        assertThat(cap.getValue().provider()).isEqualTo("discord");
+    }
+
+    @Test
+    void unverifiedEmailDoesNotAutoLinkAndCreatesNewAccount() {
+        // 邮箱未验证 → 绝不按邮箱关联，建新号
+        AuthUser dc = discordUser("snow-2", "alice@example.com", false);
+        when(userCenterService.findByUsername("discord_snow-2")).thenReturn(Optional.empty());
+        when(passwordService.hash(any())).thenReturn("hash");
+        when(userCenterService.createUser(any())).thenReturn(enabledUser(20L, "discord_snow-2", "hash"));
+
+        try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
+            stpUtil.when(StpUtil::getTokenName).thenReturn("satoken");
+            stpUtil.when(StpUtil::getTokenValue).thenReturn("tok");
+            authService.loginByProvider("discord", dc);
+        }
+
+        // 未验证：不查邮箱关联，直接建新号
+        verify(userCenterService).createUser(any());
+        verify(userAccountRepository, org.mockito.Mockito.never()).findByEmail(any());
+    }
+
+    @Test
+    void verifiedEmailWithNoMatchCreatesNewAccount() {
+        AuthUser dc = discordUser("snow-3", "new@example.com", true);
+        when(userCenterService.findByUsername("discord_snow-3")).thenReturn(Optional.empty());
+        when(userAccountRepository.findByEmail("new@example.com")).thenReturn(java.util.List.of());
+        when(passwordService.hash(any())).thenReturn("hash");
+        when(userCenterService.createUser(any())).thenReturn(enabledUser(30L, "discord_snow-3", "hash"));
+
+        try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
+            stpUtil.when(StpUtil::getTokenName).thenReturn("satoken");
+            stpUtil.when(StpUtil::getTokenValue).thenReturn("tok");
+            authService.loginByProvider("discord", dc);
+        }
+        verify(userCenterService).createUser(any());
+    }
+
+    @Test
+    void ambiguousEmailMatchDoesNotAutoLink() {
+        // 同邮箱命中多个账号（异常）→ 保守建新号，绝不猜挂
+        AuthUser dc = discordUser("snow-4", "dup@example.com", true);
+        when(userCenterService.findByUsername("discord_snow-4")).thenReturn(Optional.empty());
+        when(userAccountRepository.findByEmail("dup@example.com"))
+                .thenReturn(java.util.List.of(enabledUser(1L, "a", "h"), enabledUser(2L, "b", "h")));
+        when(passwordService.hash(any())).thenReturn("hash");
+        when(userCenterService.createUser(any())).thenReturn(enabledUser(40L, "discord_snow-4", "hash"));
+
+        try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
+            stpUtil.when(StpUtil::getTokenName).thenReturn("satoken");
+            stpUtil.when(StpUtil::getTokenValue).thenReturn("tok");
+            authService.loginByProvider("discord", dc);
+        }
+        verify(userCenterService).createUser(any());
+    }
+
+    @Test
+    void githubLoginAutoLinksToNonGithubAccountAndBackfillsGithubId() {
+        // 反向：先 Discord 注册（账号 github_id=null），后用 GitHub 同邮箱登录 → 挂靠 + 补 github_id
+        AuthUser gh = githubUser("555", "Nick", null, "alice@example.com");
+        UserAccount discordFirst = new UserAccount(50L, "discord_snow-x", "hash", "显示名", true,
+                Set.of("user"), Set.of(), null, "alice@example.com", null /*github_id null*/, null);
+        when(userCenterService.findByUsername("github_555")).thenReturn(Optional.empty());
+        when(userAccountRepository.findByEmail("alice@example.com"))
+                .thenReturn(java.util.List.of(discordFirst));
+
+        try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
+            stpUtil.when(StpUtil::getTokenName).thenReturn("satoken");
+            stpUtil.when(StpUtil::getTokenValue).thenReturn("tok");
+            authService.loginByProvider("github", gh);
+        }
+
+        verify(userCenterService, org.mockito.Mockito.never()).createUser(any());
+        verify(userAccountRepository).setGithubIdIfAbsent(50L, 555L);
     }
 
     // =============================================

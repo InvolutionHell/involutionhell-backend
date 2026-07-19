@@ -80,6 +80,13 @@ public class JdbcUserAccountRepository implements UserAccountRepository {
     }
 
     @Override
+    public List<UserAccount> findByEmail(String email) {
+        if (email == null || email.isBlank()) return List.of();
+        return jdbc.query(
+                "SELECT * FROM user_accounts WHERE LOWER(email) = LOWER(?)", rowMapper, email);
+    }
+
+    @Override
     public List<UserAccount> findAll() {
         return jdbc.query("SELECT * FROM user_accounts ORDER BY id", rowMapper);
     }
@@ -142,6 +149,12 @@ public class JdbcUserAccountRepository implements UserAccountRepository {
     @Override
     public void clearGithubId(Long userId) {
         jdbc.update("UPDATE user_accounts SET github_id = NULL WHERE id = ?", userId);
+    }
+
+    @Override
+    public void setGithubIdIfAbsent(Long userId, Long githubId) {
+        jdbc.update("UPDATE user_accounts SET github_id = ? WHERE id = ? AND github_id IS NULL",
+                githubId, userId);
     }
 
     @Override

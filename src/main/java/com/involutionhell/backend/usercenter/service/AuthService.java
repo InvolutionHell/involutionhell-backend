@@ -113,23 +113,9 @@ public class AuthService {
 
         UserAccount userAccount = userCenterService.findByUsername(username).map(existing ->
             userCenterService.updateProfile(existing.id(), displayName, avatarUrl, email, githubId)
-        ).orElseGet(() -> {
-            UserAccount newUser = new UserAccount(
-                    null,
-                    username,
-                    // 第三方用户不用密码登录，塞随机超长密码占位（password_hash NOT NULL）
-                    passwordService.hash(UUID.randomUUID().toString()),
-                    displayName,
-                    true,
-                    Set.of("user"),
-                    Set.of(),
-                    avatarUrl,
-                    email,
-                    githubId,
-                    null
-            );
-            return userCenterService.createUser(newUser);
-        });
+        ).orElseGet(() ->
+            autoLinkByVerifiedEmailOrCreate(provider, authUser, username, displayName, avatarUrl, email, githubId)
+        );
 
         if (!userAccount.enabled()) {
             throw new IllegalStateException("账号已被禁用");
@@ -138,6 +124,79 @@ public class AuthService {
         ensureIdentity(userAccount.id(), provider, providerUserId, email, displayName);
 
         return executeLogin(userAccount);
+    }
+
+    /**
+     * 该 provider 首次登录、账号还不存在时：
+     *   1. provider 的**已验证**邮箱唯一匹配到某个已有账号 → 挂靠到那个账号（不建新号），
+     *      防止已有 GitHub 账号的人用 Discord 登录被分叉出第二个账号；
+     *   2. 否则（邮箱缺失 / 未验证 / 无匹配 / 多个匹配）→ 建新账号。
+     *
+     * 安全前提：只信"provider 已验证"的邮箱。攻击者拿受害者邮箱注册的第三方号无法把
+     * 邮箱标成 verified（要点验证链接=控制邮箱），所以自动关联不增加攻击面（ADR-001）。
+     * 挂靠时**不覆盖**已有账号的展示名/头像/github_id——只由 ensureIdentity 挂上新身份。
+     *
+     * ponytail: 这是"信任 provider verified 邮箱"的即时防分叉；用户自有 OTP 的规范邮箱
+     * 体系（注册时验证）是后续独立子系统，与本逻辑兼容。
+     */
+    private UserAccount autoLinkByVerifiedEmailOrCreate(String provider, AuthUser authUser, String username,
+                                                        String displayName, String avatarUrl,
+                                                        String email, Long githubId) {
+        if (email != null && !email.isBlank() && isProviderEmailVerified(provider, authUser)) {
+            java.util.List<UserAccount> matches = userAccountRepository.findByEmail(email);
+            if (matches.size() == 1) {
+                UserAccount target = matches.get(0);
+                log.info("verified-email 自动关联：provider={} 的已验证邮箱匹配到已有账号 id={}，挂靠不建新号",
+                        provider, target.id());
+                // 反向场景（先 Discord 注册、后 GitHub 登录挂靠）：目标账号 github_id 可能为空。
+                // M1-M3 双写期贡献归属 / /u/{githubId} 都靠这列，补上（仅当为空，不覆盖）。
+                // 写失败不阻断登录：撞 UNIQUE(github_id) 等极端情况记日志即可。
+                if ("github".equals(provider) && githubId != null && target.githubId() == null) {
+                    try {
+                        userAccountRepository.setGithubIdIfAbsent(target.id(), githubId);
+                    } catch (Exception e) {
+                        log.warn("挂靠时补写 github_id 失败（userId={}）", target.id(), e);
+                    }
+                }
+                return target;
+            }
+            if (matches.size() > 1) {
+                // 多账号共用同一邮箱（不应发生）：保守建新号，绝不猜挂给谁
+                log.warn("verified-email 命中多个账号（{} 个），保守建新号避免挂错", matches.size());
+            }
+        }
+        UserAccount newUser = new UserAccount(
+                null,
+                username,
+                // 第三方用户不用密码登录，塞随机超长密码占位（password_hash NOT NULL）
+                passwordService.hash(UUID.randomUUID().toString()),
+                displayName,
+                true,
+                Set.of("user"),
+                Set.of(),
+                avatarUrl,
+                email,
+                githubId,
+                null
+        );
+        return userCenterService.createUser(newUser);
+    }
+
+    /**
+     * provider 是否已验证该邮箱。只有 true 才允许按邮箱自动关联。
+     *   - discord：/users/@me 的 "verified" 布尔（Discord 已验证账号邮箱）
+     *   - github：JustAuth 取的是 primary email，GitHub 要求 primary 已验证，信任
+     *   - 其它未知 provider：保守返回 false，不自动关联
+     */
+    private boolean isProviderEmailVerified(String provider, AuthUser authUser) {
+        return switch (provider) {
+            case "discord" -> {
+                com.alibaba.fastjson.JSONObject raw = authUser.getRawUserInfo();
+                yield raw != null && raw.getBooleanValue("verified");
+            }
+            case "github" -> true;
+            default -> false;
+        };
     }
 
     /**

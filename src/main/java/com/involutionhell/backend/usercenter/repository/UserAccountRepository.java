@@ -28,6 +28,13 @@ public interface UserAccountRepository {
     Optional<UserAccount> findByGithubId(Long githubId);
 
     /**
+     * 按邮箱（大小写不敏感）查询用户。用于第三方登录的"已验证邮箱自动关联"。
+     * 返回 List 而非 Optional：email 无 UNIQUE 约束，调用方需自行判断"恰好一个"才关联，
+     * 多个匹配时保守不关联。
+     */
+    List<UserAccount> findByEmail(String email);
+
+    /**
      * 查询所有用户。
      */
     List<UserAccount> findAll();
@@ -59,6 +66,12 @@ public interface UserAccountRepository {
      * 的启动回填会在下次重启时按残留的 github_id 把身份静默复活（ADR-001）。
      */
     void clearGithubId(Long userId);
+
+    /**
+     * 仅当 github_id 当前为空时写入。用于"先非 github 注册、后 github 登录挂靠"时补列，
+     * 不覆盖已有值。撞 UNIQUE(github_id) 时抛异常由调用方按"不阻断登录"处理。
+     */
+    void setGithubIdIfAbsent(Long userId, Long githubId);
 
     /**
      * 查询指定用户的偏好 Map，用户不存在时抛 IllegalArgumentException。

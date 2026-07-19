@@ -101,9 +101,17 @@ INV-006 已被"付费 LLM 端点限流"占用，编号按 SECURITY.md 流水规�
   `github_<id>` 用户名永不强迁。
 - **资料刷新只填空缺字段**：多 provider 下 last-login-wins 会互相覆盖头像、
   用未验证邮箱覆盖 email。
-- **禁止邮箱静默合并**（未验证邮箱 provider 是账户接管向量）；同邮箱只提示引导，
-  合并必须在已登录会话内主动完成。提示功能须随第二个 provider 同期上线，
-  否则上线当天就会产生分叉账号。
+- **邮箱关联只信"provider 已验证"的邮箱**。第三方登录时 identity 查不到，若
+  provider 的**已验证**邮箱唯一匹配到已有账号 → 自动挂靠（防分叉，主路径，见
+  `AuthService.autoLinkByVerifiedEmailOrCreate`）。**禁止用未验证邮箱合并**——
+  攻击者拿受害者邮箱注册的第三方号无法把邮箱标 verified（要点验证链接=控制邮箱），
+  所以已验证邮箱自动关联不增加攻击面（Auth0/Keycloak 同款）。多个匹配时保守建新号。
+- **规范邮箱（用户自有 OTP）** 是后续独立子系统：注册时用我们自己的验证码验一次邮箱，
+  使 email 成为账号的规范已验证身份，覆盖"provider 没给邮箱/未验证"的情况。
+  **前置**：需要事务邮件服务 + `noreply@involutionhell.com` 发信域名——不能用
+  ChatBot 那个个人 Gmail（额度/投递率/隐私都不行）。待发信基础设施定了再做。
+- **资料刷新只填空缺字段**：多 provider 下 last-login-wins 会互相覆盖头像、
+  用未验证邮箱覆盖 email。自动关联挂靠时**不覆盖**已有账号资料。
 
 ## 迁移阶段
 
@@ -112,7 +120,9 @@ INV-006 已被"付费 LLM 端点限流"占用，编号按 SECURITY.md 流水规�
 | M0 | 建表 + 幂等回填 + repository | ✅ PR #43 |
 | M1 | `loginByProvider` 统一流程（username 主查 + identity 双写） + state/cookie 硬化 + INV-007；`github_id` 列双写沿用 | ✅ 本 PR |
 | M2a | 解绑 + 列表后端（解绑锁死防护 + github 解绑清 github_id 列） | ✅ 本 PR |
-| M2b | 绑定流程（intent store + callback 分支）后端 + 设置页前端 UI | 待做 |
-| M3 后端 | Discord provider（自定义 AuthSource）+ OAuth 端点泛化为 {provider} | ✅ 本 PR |
-| M3 前端 | 登录页 Discord 按钮 + 设置页身份 UI（另 repo，另 PR） | 待做 |
+| 防分叉 | 已验证邮箱自动关联（登录时挂靠而非分叉） | ✅ 本 PR |
+| M3 后端 | Discord provider（自定义 AuthSource）+ OAuth 端点泛化为 {provider} | ✅ #48 |
+| M3 前端 | 登录页 Discord 按钮 + 设置页身份 UI | ✅ #382/#383 |
+| OTP 注册 | 自有验证码验邮箱→规范身份（**待事务邮件基础设施**） | 待做 |
+| M2b 绑定 | 设置页"连接新 provider"（可选，次要路径） | 待做 |
 | M4 | identities 稳定一个版本后删 `github_id` 列（单独拆期，保回滚路径） | 待做 |
