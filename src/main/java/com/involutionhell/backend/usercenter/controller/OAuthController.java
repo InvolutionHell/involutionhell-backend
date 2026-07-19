@@ -52,6 +52,11 @@ public class OAuthController {
                 .build());
     }
 
+    // OAuth state 双提交 cookie 名。INV-007：callback 校验 URL state 必须等于此 cookie，
+    // 二者都由本次 render 生成——防登录 CSRF（攻击者无法向受害者浏览器种此 cookie）。
+    static final String STATE_COOKIE = "ih_oauth_state";
+    private static final int STATE_COOKIE_MAX_AGE_SECONDS = 300;
+
     /**
      * 构建授权链接并重定向到 GitHub
      * 前端直接跳转到后端此地址（NEXT_PUBLIC_BACKEND_URL + /oauth/render/github）发起登录
@@ -60,8 +65,31 @@ public class OAuthController {
     public void renderAuth(HttpServletResponse response) throws IOException {
         // 打印当前使用的 GitHub Client ID 和 redirect_uri，便于排查 token 配置问题
         log.info("[OAuth] GitHub Client ID = {}, redirect_uri = {}", githubClientId, githubRedirectUri);
+        String state = me.zhyd.oauth.utils.AuthStateUtils.createState();
+        // 把 state 同时种进 httpOnly cookie。SameSite=Lax 是关键：callback 是 github.com
+        // 发起的跨站顶级导航，Strict 会剥掉 cookie；Lax 恰好在顶级 GET 导航时携带。
+        response.addHeader("Set-Cookie", buildStateCookie(state, STATE_COOKIE_MAX_AGE_SECONDS));
         AuthRequest authRequest = getAuthRequest();
-        response.sendRedirect(authRequest.authorize(me.zhyd.oauth.utils.AuthStateUtils.createState()));
+        response.sendRedirect(authRequest.authorize(state));
+    }
+
+    private String buildStateCookie(String value, int maxAgeSeconds) {
+        return org.springframework.http.ResponseCookie.from(STATE_COOKIE, value)
+                .httpOnly(true)
+                .secure(frontEndUrl.startsWith("https"))   // 本地 http 下不置 Secure，否则浏览器不回传
+                .sameSite("Lax")
+                .path("/")
+                .maxAge(maxAgeSeconds)
+                .build()
+                .toString();
+    }
+
+    private String readStateCookie(jakarta.servlet.http.HttpServletRequest request) {
+        if (request.getCookies() == null) return null;
+        for (jakarta.servlet.http.Cookie c : request.getCookies()) {
+            if (STATE_COOKIE.equals(c.getName())) return c.getValue();
+        }
+        return null;
     }
 
     /**
@@ -71,6 +99,7 @@ public class OAuthController {
     @GetMapping("/api/auth/callback/github")
     public void login(@RequestParam(required = false) String code,
                       @RequestParam(required = false) String state,
+                      jakarta.servlet.http.HttpServletRequest request,
                       HttpServletResponse response) throws IOException {
         // 参数缺失时直接走失败分支：若 @RequestParam 保持 required=true，Spring 在进入方法前
         // 就抛 MissingServletRequestParameterException → 默认 500 白屏；
@@ -78,6 +107,17 @@ public class OAuthController {
         if (code == null || state == null) {
             log.warn("[OAuth] GitHub callback missing code/state (direct access?), redirecting to error page");
             response.sendRedirect(frontEndUrl + "/login?error=oauth_failed");
+            return;
+        }
+
+        // INV-007：state 必须等于本次 render 种下的 cookie（双提交校验）。缺失/不匹配
+        // 即拒绝，且在换 token 之前——不给伪造 state 触发登录的机会，也不白打 GitHub。
+        String cookieState = readStateCookie(request);
+        // 用完即清（无论后续成败），避免 cookie 泄漏 / 复用。
+        response.addHeader("Set-Cookie", buildStateCookie("", 0));
+        if (cookieState == null || !cookieState.equals(state)) {
+            log.warn("[OAuth] state 与 cookie 不匹配（可能的 CSRF 或 cookie 丢失），拒绝登录");
+            response.sendRedirect(frontEndUrl + "/login?error=oauth_state");
             return;
         }
 
