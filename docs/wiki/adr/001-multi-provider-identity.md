@@ -109,8 +109,8 @@ INV-006 已被"付费 LLM 端点限流"占用，编号按 SECURITY.md 流水规�
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
-| M0 | 建表 + 幂等回填 + repository | ✅ 本 ADR 随附 PR |
-| M1 | `loginByProvider` 统一流程 + state/cookie 硬化 + INV-007 测试；`github_id` 双写 | 待做 |
+| M0 | 建表 + 幂等回填 + repository | ✅ PR #43 |
+| M1 | `loginByProvider` 统一流程（username 主查 + identity 双写） + state/cookie 硬化 + INV-007；`github_id` 列双写沿用 | ✅ 本 PR |
 | M2 | 绑定/解绑 + 设置页 UI + 确认页 | 待做 |
 | M3 | Discord 上线；`/u/`、follows 查询改走 identities | 待做 |
 | M4 | identities 稳定一个版本后删 `github_id` 列（单独拆期，保回滚路径） | 待做 |
