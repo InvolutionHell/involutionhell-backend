@@ -140,6 +140,11 @@ public class JdbcUserAccountRepository implements UserAccountRepository {
     }
 
     @Override
+    public void clearGithubId(Long userId) {
+        jdbc.update("UPDATE user_accounts SET github_id = NULL WHERE id = ?", userId);
+    }
+
+    @Override
     public void updatePasswordHash(Long userId, String passwordHash) {
         // 用于 AuthService 在登录成功后把 legacy SHA-256 哈希就地升级为 bcrypt（INV-003）
         int updated = jdbc.update(

@@ -26,4 +26,9 @@ public interface UserIdentityRepository {
     UserIdentity insert(UserIdentity identity);
 
     void touchLastLogin(long id);
+
+    /**
+     * 删除某账号的某 provider 身份，返回受影响行数（0 = 本无此绑定）。
+     */
+    int deleteByUserIdAndProvider(long userId, String provider);
 }
