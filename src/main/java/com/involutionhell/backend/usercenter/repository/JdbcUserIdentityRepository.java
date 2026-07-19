@@ -83,4 +83,11 @@ public class JdbcUserIdentityRepository implements UserIdentityRepository {
     public void touchLastLogin(long id) {
         jdbc.update("UPDATE user_identities SET last_login_at = CURRENT_TIMESTAMP WHERE id = ?", id);
     }
+
+    @Override
+    public int deleteByUserIdAndProvider(long userId, String provider) {
+        return jdbc.update(
+                "DELETE FROM user_identities WHERE user_id = ? AND provider = ?",
+                userId, normalize(provider));
+    }
 }

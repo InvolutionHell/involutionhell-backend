@@ -55,6 +55,12 @@ public interface UserAccountRepository {
     void updatePasswordHash(Long userId, String passwordHash);
 
     /**
+     * 清空指定用户的 github_id 列。解绑 github 身份时同步调用——否则 schema.sql
+     * 的启动回填会在下次重启时按残留的 github_id 把身份静默复活（ADR-001）。
+     */
+    void clearGithubId(Long userId);
+
+    /**
      * 查询指定用户的偏好 Map，用户不存在时抛 IllegalArgumentException。
      */
     Map<String, Object> findPreferences(Long userId);

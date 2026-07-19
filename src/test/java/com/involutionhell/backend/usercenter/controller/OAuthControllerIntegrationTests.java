@@ -62,9 +62,23 @@ class OAuthControllerIntegrationTests extends AbstractWebIntegrationTest {
     // =============================================
 
     @Test
-    void callbackRedirectsToFrontendErrorPageWhenOAuthFails() throws Exception {
-        // 不携带合法的 code 和 state，JustAuth 会返回失败响应
-        // 控制器应将其重定向至前端错误页（/login?error=oauth_failed）
+    void renderSetsStateCookie() throws Exception {
+        MvcResult result = mockMvc.perform(get("/oauth/render/github"))
+                .andExpect(status().is3xxRedirection())
+                .andReturn();
+
+        String setCookie = result.getResponse().getHeader("Set-Cookie");
+        assertThat(setCookie)
+                .as("render 必须种下 httpOnly + SameSite=Lax 的 state cookie")
+                .isNotNull()
+                .contains("ih_oauth_state=")
+                .contains("HttpOnly")
+                .contains("SameSite=Lax");
+    }
+
+    @Test
+    void callbackWithoutStateCookieIsRejectedBeforeTokenExchange() throws Exception {
+        // 带 code+state 但无 state cookie（伪造 state / cookie 丢失）→ INV-007 在换 token 前拒绝
         MvcResult result = mockMvc.perform(
                         get("/api/auth/callback/github")
                                 .param("code", "invalid-code")
@@ -74,7 +88,26 @@ class OAuthControllerIntegrationTests extends AbstractWebIntegrationTest {
 
         String location = result.getResponse().getRedirectedUrl();
         assertThat(location)
-                .as("OAuth 失败时应重定向至前端错误页")
+                .as("state 与 cookie 不匹配时应拒绝并重定向到 state 错误页")
+                .isNotNull()
+                .endsWith("/login?error=oauth_state");
+    }
+
+    @Test
+    void callbackWithMatchingStateCookieProceedsPastStateCheck() throws Exception {
+        // state == cookie，越过 INV-007 校验后进入 JustAuth 换 token；code 无效 → oauth_failed。
+        // 关键是它没有停在 oauth_state，证明 cookie 匹配这条正路是通的。
+        MvcResult result = mockMvc.perform(
+                        get("/api/auth/callback/github")
+                                .param("code", "invalid-code")
+                                .param("state", "matching-state")
+                                .cookie(new jakarta.servlet.http.Cookie("ih_oauth_state", "matching-state")))
+                .andExpect(status().is3xxRedirection())
+                .andReturn();
+
+        String location = result.getResponse().getRedirectedUrl();
+        assertThat(location)
+                .as("cookie 匹配后应越过 state 校验，止于 JustAuth 换 token 失败")
                 .isNotNull()
                 .endsWith("/login?error=oauth_failed");
     }
