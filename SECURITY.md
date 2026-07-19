@@ -125,3 +125,21 @@
   本身，不能只依赖前端网关。上限经 `openai.stream.requests-per-minute`
   配置（默认 10/分钟/用户），调大需说明场景。
 - **历史**：2026-04-16 由 #297 报告；2026-07-18 加限流 + 本不变量。
+
+## INV-007 · OAuth callback 不得信任 state 中的用户身份
+
+- **保护点**：`OAuthController#login`（`/api/auth/callback/{provider}`）的 state
+  双提交校验——URL 里的 `state` 必须等于本次 `renderAuth` 种下的 `ih_oauth_state`
+  httpOnly cookie，缺失/不匹配即在换 token 前拒绝。
+- **测试**：
+  - `OAuthControllerIntegrationTests#callbackWithoutStateCookieIsRejectedBeforeTokenExchange`
+  - `OAuthControllerIntegrationTests#callbackWithMatchingStateCookieProceedsPastStateCheck`（反向）
+  - `OAuthControllerIntegrationTests#renderSetsStateCookie`（前置条件）
+- **为什么**：callback 是 provider 发起的顶级 GET，不带 Authorization header；若
+  直接信任 URL `state`（尤其未来绑定流程把 loginId 塞进 state），攻击者可发起
+  流程拿到合法 state 诱导受害者授权，把受害者的第三方身份绑/登进攻击者预期的
+  账号（登录 CSRF / 绑定劫持）。防线：state 必须回证到"发起本次流程的同一浏览器"
+  ——即 render 时种下、callback 时比对的 cookie，攻击者无法向受害者浏览器种此
+  cookie。绑定目标账号（M2）同理只能来自服务端校验过的当前会话，绝不取自 state。
+- **历史**：2026-07-19 随多 provider 身份体系 M1 引入（RFC #42 / ADR-001）。
+  编号说明：INV-006 已被"付费 LLM 端点限流"占用，按流水规则用 INV-007。

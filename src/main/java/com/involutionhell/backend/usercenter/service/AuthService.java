@@ -5,7 +5,9 @@ import com.involutionhell.backend.usercenter.dto.LoginRequest;
 import com.involutionhell.backend.usercenter.dto.LoginResponse;
 import com.involutionhell.backend.usercenter.dto.UserView;
 import com.involutionhell.backend.usercenter.model.UserAccount;
+import com.involutionhell.backend.usercenter.model.UserIdentity;
 import com.involutionhell.backend.usercenter.repository.UserAccountRepository;
+import com.involutionhell.backend.usercenter.repository.UserIdentityRepository;
 import me.zhyd.oauth.model.AuthUser;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -22,16 +24,19 @@ public class AuthService {
     private final UserCenterService userCenterService;
     private final PasswordService passwordService;
     private final UserAccountRepository userAccountRepository;
+    private final UserIdentityRepository userIdentityRepository;
 
     /**
      * 创建认证服务并注入用户与密码服务。
      */
     public AuthService(UserCenterService userCenterService,
                        PasswordService passwordService,
-                       UserAccountRepository userAccountRepository) {
+                       UserAccountRepository userAccountRepository,
+                       UserIdentityRepository userIdentityRepository) {
         this.userCenterService = userCenterService;
         this.passwordService = passwordService;
         this.userAccountRepository = userAccountRepository;
+        this.userIdentityRepository = userIdentityRepository;
     }
 
     /**
@@ -71,57 +76,86 @@ public class AuthService {
     }
     
     /**
-     * 第三方 GitHub 授权登录逻辑。
-     * 如果用户不存在，则自动注册；如果已存在，则刷新其头像、邮箱等资料。
+     * GitHub 授权登录（薄委托）。历史入口，保留供 OAuthController 调用。
      */
     public LoginResponse loginByGithub(AuthUser githubUser) {
-        // 使用特殊的 github_ 前缀来标识这是第三方登录的用户，防止与普通用户名冲突
-        String githubUsername = "github_" + githubUser.getUuid();
+        return loginByProvider("github", githubUser);
+    }
 
-        // 从 JustAuth 提取 GitHub 资料字段
-        String displayName = githubUser.getNickname() != null ? githubUser.getNickname() : githubUser.getUsername();
-        String avatarUrl   = githubUser.getAvatar();
-        String email       = githubUser.getEmail();
-        // JustAuth 对 GitHub 的 uuid 就是 GitHub 的数字用户 ID（字符串形式）
-        // 用 final 变量包装，确保 lambda 内可以引用（try-catch 双路赋值不是 effectively final）
-        Long parsedGithubId;
-        try {
-            parsedGithubId = Long.parseLong(githubUser.getUuid());
-        } catch (NumberFormatException e) {
-            parsedGithubId = null;
+    /**
+     * 第三方 provider 授权登录（M1 统一流程）。
+     * 不存在则自动注册，已存在则刷新资料；无论哪条路径都维护一行 user_identities。
+     *
+     * 双写期语义（ADR-001，M1-M3）：账号仍按 "{provider}_{providerUserId}" 用户名主查，
+     * user_identities 作为并行写入的第二真相源（M3 才翻转成主查）。github 的 github_id
+     * 列同样双写（createUser/updateProfile 已写）。identity 缺失时惰性补齐（自愈），
+     * 兜住 M0-M1 窗口内注册、回填尚未覆盖的账号。
+     */
+    public LoginResponse loginByProvider(String provider, AuthUser authUser) {
+        String providerUserId = authUser.getUuid();
+        // 保留 "{provider}_{id}" 用户名约定（github 即 "github_{id}"，与历史一致）。
+        String username = provider + "_" + providerUserId;
+
+        String displayName = authUser.getNickname() != null ? authUser.getNickname() : authUser.getUsername();
+        String avatarUrl   = authUser.getAvatar();
+        String email       = authUser.getEmail();
+        // github 的 uuid 就是数字用户 ID；非数字（极罕见）时置 null。
+        // 非 github provider 不写 github_id 列。
+        Long parsedGithubId = null;
+        if ("github".equals(provider)) {
+            try {
+                parsedGithubId = Long.parseLong(providerUserId);
+            } catch (NumberFormatException e) {
+                parsedGithubId = null;
+            }
         }
         final Long githubId = parsedGithubId;
 
-        // 查找是否已经有该用户
-        UserAccount userAccount = userCenterService.findByUsername(githubUsername).map(existing -> {
-            // 已存在：刷新头像、邮箱、展示名称（GitHub 用户可能更新了自己的资料）
-            return userCenterService.updateProfile(existing.id(), displayName, avatarUrl, email, githubId);
-        }).orElseGet(() -> {
-            // 不存在：自动注册新用户
+        UserAccount userAccount = userCenterService.findByUsername(username).map(existing ->
+            userCenterService.updateProfile(existing.id(), displayName, avatarUrl, email, githubId)
+        ).orElseGet(() -> {
             UserAccount newUser = new UserAccount(
-                    null, // ID 由数据库自动生成
-                    githubUsername,
-                    // 给第三方用户生成一个随机超长密码，他们不需要用密码登录
+                    null,
+                    username,
+                    // 第三方用户不用密码登录，塞随机超长密码占位（password_hash NOT NULL）
                     passwordService.hash(UUID.randomUUID().toString()),
                     displayName,
-                    true,           // 默认启用
-                    Set.of("user"), // 赋予默认角色（小写，与 normalizeSet 一致）
-                    Set.of(),       // 默认权限
+                    true,
+                    Set.of("user"),
+                    Set.of(),
                     avatarUrl,
                     email,
                     githubId,
-                    null            // 偏好由数据库默认值初始化为 {}
+                    null
             );
             return userCenterService.createUser(newUser);
         });
 
-        // 检查该用户是否已被系统管理员禁用
         if (!userAccount.enabled()) {
             throw new IllegalStateException("账号已被禁用");
         }
 
-        // 执行 Sa-Token 登录并返回信息
+        ensureIdentity(userAccount.id(), provider, providerUserId, email, displayName);
+
         return executeLogin(userAccount);
+    }
+
+    /**
+     * 维护 user_identities 双写：缺行则插入（惰性自愈），有则刷新 last_login_at。
+     * 写失败不阻断登录——与 INV-003 lazy upgrade 同策略，记日志后继续，
+     * 下次登录还会再试，绝不让 identity 写入把用户挡在门外。
+     */
+    private void ensureIdentity(long userId, String provider, String providerUserId,
+                                String email, String displayName) {
+        try {
+            userIdentityRepository.findByProviderAndProviderUserId(provider, providerUserId)
+                    .ifPresentOrElse(
+                            existing -> userIdentityRepository.touchLastLogin(existing.id()),
+                            () -> userIdentityRepository.insert(new UserIdentity(
+                                    null, userId, provider, providerUserId, email, displayName, null, null)));
+        } catch (Exception e) {
+            log.warn("user_identities 双写失败（provider={} userId={}），不阻断登录", provider, userId, e);
+        }
     }
     
     /**

@@ -40,8 +40,24 @@ class AuthServiceTests {
     @Mock
     private UserAccountRepository userAccountRepository;
 
+    @Mock
+    private com.involutionhell.backend.usercenter.repository.UserIdentityRepository userIdentityRepository;
+
     @InjectMocks
     private AuthService authService;
+
+    /**
+     * identity 双写默认：缺行（Optional.empty）→ ensureIdentity 走 insert 路径。
+     * lenient 因为账号密码登录相关测试不触及 identity 分支。
+     */
+    @org.junit.jupiter.api.BeforeEach
+    void stubIdentityLookupEmpty() {
+        org.mockito.Mockito.lenient()
+                .when(userIdentityRepository.findByProviderAndProviderUserId(
+                        org.mockito.ArgumentMatchers.anyString(),
+                        org.mockito.ArgumentMatchers.anyString()))
+                .thenReturn(Optional.empty());
+    }
 
     // =============================================
     // 辅助方法
@@ -344,6 +360,71 @@ class AuthServiceTests {
         assertThatThrownBy(() -> authService.loginByGithub(ghUser))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage("账号已被禁用");
+    }
+
+    // =============================================
+    // loginByProvider() - identity 双写（M1）
+    // =============================================
+
+    @Test
+    void newUserGetsIdentityInserted() {
+        AuthUser ghUser = githubUser("12345", "Nick", null, null);
+        when(userCenterService.findByUsername("github_12345")).thenReturn(Optional.empty());
+        when(passwordService.hash(any())).thenReturn("hash");
+        when(userCenterService.createUser(any())).thenReturn(enabledUser(10L, "github_12345", "hash"));
+
+        try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
+            stpUtil.when(StpUtil::getTokenName).thenReturn("satoken");
+            stpUtil.when(StpUtil::getTokenValue).thenReturn("token");
+            authService.loginByGithub(ghUser);
+        }
+
+        org.mockito.ArgumentCaptor<com.involutionhell.backend.usercenter.model.UserIdentity> cap =
+                org.mockito.ArgumentCaptor.forClass(com.involutionhell.backend.usercenter.model.UserIdentity.class);
+        verify(userIdentityRepository).insert(cap.capture());
+        assertThat(cap.getValue().userId()).isEqualTo(10L);
+        assertThat(cap.getValue().provider()).isEqualTo("github");
+        assertThat(cap.getValue().providerUserId()).isEqualTo("12345");
+    }
+
+    @Test
+    void existingIdentityRefreshesLastLoginInsteadOfInserting() {
+        AuthUser ghUser = githubUser("12345", "Nick", null, null);
+        when(userCenterService.findByUsername("github_12345"))
+                .thenReturn(Optional.of(enabledUser(10L, "github_12345", "hash")));
+        when(userCenterService.updateProfile(any(), any(), any(), any(), any()))
+                .thenReturn(enabledUser(10L, "github_12345", "hash"));
+        // 该 provider 身份已存在 → 不应再 insert，只刷新 last_login_at
+        when(userIdentityRepository.findByProviderAndProviderUserId("github", "12345"))
+                .thenReturn(Optional.of(new com.involutionhell.backend.usercenter.model.UserIdentity(
+                        7L, 10L, "github", "12345", null, null, null, null)));
+
+        try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
+            stpUtil.when(StpUtil::getTokenName).thenReturn("satoken");
+            stpUtil.when(StpUtil::getTokenValue).thenReturn("token");
+            authService.loginByGithub(ghUser);
+        }
+
+        verify(userIdentityRepository).touchLastLogin(7L);
+        verify(userIdentityRepository, org.mockito.Mockito.never()).insert(any());
+    }
+
+    @Test
+    void identityWriteFailureDoesNotBlockLogin() {
+        AuthUser ghUser = githubUser("12345", "Nick", null, null);
+        when(userCenterService.findByUsername("github_12345")).thenReturn(Optional.empty());
+        when(passwordService.hash(any())).thenReturn("hash");
+        when(userCenterService.createUser(any())).thenReturn(enabledUser(10L, "github_12345", "hash"));
+        // identity 写入炸掉——不能阻断登录（与 INV-003 lazy upgrade 同策略）
+        org.mockito.Mockito.doThrow(new RuntimeException("simulated identity write failure"))
+                .when(userIdentityRepository).insert(any());
+
+        try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
+            stpUtil.when(StpUtil::getTokenName).thenReturn("satoken");
+            stpUtil.when(StpUtil::getTokenValue).thenReturn("token-xyz");
+            LoginResponse response = authService.loginByGithub(ghUser);
+            assertThat(response.tokenValue()).isEqualTo("token-xyz");
+        }
     }
 
     // =============================================
