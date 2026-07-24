@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.github.benmanes.caffeine.cache.Ticker;
@@ -20,6 +22,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -40,6 +43,12 @@ class RegistrationServiceTests {
     private final ResendEmailService email = mock(ResendEmailService.class);
     private final FakeTicker ticker = new FakeTicker();
     private final RegistrationService svc = new RegistrationService(email, ticker);
+
+    // 默认按"已配置 Resend"跑正常发信路径；dev-fallback 用例单独覆盖为 false。
+    @BeforeEach
+    void resendConfigured() {
+        when(email.isConfigured()).thenReturn(true);
+    }
 
     private PendingRegistration reg(String providerEmail) {
         return new PendingRegistration("discord", "snow-1", "Nick", null, providerEmail, null);
@@ -131,6 +140,15 @@ class RegistrationServiceTests {
         String code = sendAndCaptureCode(pid, "a@e.com");
         ticker.advance(Duration.ofMinutes(11)); // 超 10min OTP TTL
         assertThat(svc.verifyAndConsume(pid, "a@e.com", code)).isEmpty();
+    }
+
+    @Test
+    void devConsoleFallbackWhenResendUnconfigured() {
+        when(email.isConfigured()).thenReturn(false); // 覆盖 @BeforeEach：本地没配 Resend
+        String pid = svc.begin(reg("a@e.com"));
+        // 不真发信，但流程照走（返回 SENT），验证码只进日志——贡献者本地读控制台即可
+        assertThat(svc.sendOtp(pid, "a@e.com")).isEqualTo(SendResult.SENT);
+        verify(email, never()).sendHtml(anyString(), anyString(), anyString());
     }
 
     @Test

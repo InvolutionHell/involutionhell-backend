@@ -43,6 +43,11 @@ public class OAuthController {
     @Value("${justauth.type.discord.redirect-uri:}")
     private String discordRedirectUri;
 
+    // Discord 登录灰度白名单：逗号分隔的 Discord user id。非空=只放行名单内 id，
+    // 其他人在回调处被弹回 /login?error=discord_canary；空=对所有人开放（GA 时清空即可）。
+    @Value("${auth.discord.allowlist:}")
+    private String discordAllowlist;
+
     @Value("${AUTH_URL:http://localhost:3000}")
     private String frontEndUrl;
 
@@ -80,6 +85,19 @@ public class OAuthController {
         if (clientId == null || clientId.isBlank() || clientSecret == null || clientSecret.isBlank()) {
             throw new IllegalArgumentException(provider + " OAuth 未配置（缺 client-id 或 secret）");
         }
+    }
+
+    // 灰度白名单判定：空名单=全开放；否则精确匹配某个 Discord user id。
+    private boolean discordAllowed(String discordUserId) {
+        if (discordAllowlist == null || discordAllowlist.isBlank()) {
+            return true;
+        }
+        for (String id : discordAllowlist.split(",")) {
+            if (id.trim().equals(discordUserId)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // 仅用于排查日志：redirect_uri 是公开信息，不含密钥。
@@ -179,6 +197,13 @@ public class OAuthController {
 
         if (authResponse.ok()) {
             AuthUser authUser = (AuthUser) authResponse.getData();
+            // Discord 灰度：非白名单 id 在此弹回（换 token 已发生，但不建号/不登入）。
+            // 直连 /oauth/render/discord 绕过前端按钮的人也一并挡在这里。
+            if ("discord".equals(provider) && !discordAllowed(authUser.getUuid())) {
+                log.info("[OAuth] discord 灰度：uuid={} 不在白名单，拒绝登录", authUser.getUuid());
+                response.sendRedirect(frontEndUrl + "/login?error=discord_canary");
+                return;
+            }
             LoginResponse loginResponse = authService.loginByProvider(provider, authUser);
             // token 放 URL fragment（#token=），不进服务器日志/Referer；前端读入 localStorage
             response.sendRedirect(frontEndUrl + "/#token=" + loginResponse.tokenValue());
