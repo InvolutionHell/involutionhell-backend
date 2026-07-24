@@ -132,6 +132,13 @@ public class RegistrationService {
             s.lastSendAtNanos = now;
             to = normalized;
         }
+        // 本地/CI 没配 Resend key 时：验证码直接打到控制台，让贡献者不配 Resend 也能
+        // 跑通完整注册流（Django/Rails 的 console email backend 同款）。生产必配 key，
+        // isConfigured() 为 true，走不到这里；这行只在开发环境出现。
+        if (!emailService.isConfigured()) {
+            log.warn("[DEV-OTP] Resend 未配置，验证码只打印到控制台（生产不应出现此行）: email={} code={}", to, code);
+            return SendResult.SENT;
+        }
         String html = "<p>你的 InvolutionHell 注册验证码是：</p>"
                 + "<p style=\"font-size:24px;font-weight:bold;letter-spacing:4px\">" + code + "</p>"
                 + "<p>10 分钟内有效。如果不是你本人操作，忽略即可。</p>";
