@@ -19,7 +19,10 @@ import org.junit.jupiter.api.Test;
 class OAuthControllerAllowlistTests {
 
     private final AuthService authService = mock(AuthService.class);
-    private final OAuthController controller = new OAuthController(authService);
+    private final OAuthController controller = new OAuthController(
+            authService,
+            mock(com.involutionhell.backend.usercenter.service.UserIdentityService.class),
+            new com.involutionhell.backend.usercenter.oauth.AuthProviderRegistry(java.util.List.of()));
 
     private OAuthController withAllowlist(String raw) {
         controller.configureDiscordAllowlist(raw);
