@@ -143,3 +143,29 @@
   cookie。绑定目标账号（M2）同理只能来自服务端校验过的当前会话，绝不取自 state。
 - **历史**：2026-07-19 随多 provider 身份体系 M1 引入（RFC #42 / ADR-001）。
   编号说明：INV-006 已被"付费 LLM 端点限流"占用，按流水规则用 INV-007。
+
+## INV-008 · Discord 灰度闸只放行白名单与已有账号，且不得静默失效
+
+- **保护点**：`OAuthController#discordAllowed` / `#configureDiscordAllowlist`
+  （`/api/auth/callback/discord` 在换完 token 之后、建号登录之前）。
+  `auth.discord.allowlist` 配了非空值即闸启用，只放行两类人：名单内的 Discord id、
+  以及 `user_identities` 里已有该身份的回访用户；其余人一律弹回
+  `/login?error=discord_canary`，不建号、不发 token，并撤销刚换到的 access token。
+- **测试**：`OAuthControllerAllowlistTests`
+  （解析畸形取值 / 未配即全开 / 配了却解析不出 id 时拒绝所有人 /
+  空 uuid 拒绝 / 已有 identity 放行 / identity 查询失败不放行）
+- **为什么**：灰度要拦的是**建新号**——新用户的"验证邮箱→建号"（OTP wiring）尚未
+  完成，此时放任新用户从 Discord 进来会把已有 GitHub 用户分叉成第二个账号。
+  两个方向都必须防住：
+  1. **不得静默 fail-open**。闸由一个 env 驱动，缺失/拼错时值为空，行为与"故意 GA"
+     完全一致。因此启动时必须播报当前模式（闸启用 N 个 id / 闸关闭全开放），
+     否则一次丢掉 `AUTH_DISCORD_ALLOWLIST` 的部署会静默地把 Discord 对全网打开，
+     唯一信号是"没有拒绝日志"，而没人在 tail 它。
+  2. **配了值却解析不出 id 时必须拒绝所有人**，而不是塌缩成全开放——错误方向要选
+     "没人能登"（立刻可见、无损失），不能选"所有人能登"（正是灰度要防的事）。
+  另外闸**不能**卡住已有账号的回访登录，否则会把用户锁在自己的账号外面，而提示
+  只说"灰度中"，既不告知账号存在也无恢复路径。
+- **GA 流程**：OTP wiring 上线后清空 `AUTH_DISCORD_ALLOWLIST` 即全量开放；
+  在那之前清空它等于提前放开分叉风险。
+- **历史**：2026-07-24 随 Discord 灰度（#53 / involutionhell#389）引入，
+  2026-07-25 按 xhigh review（#54）补齐本不变量与测试。

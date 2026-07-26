@@ -200,6 +200,22 @@ public class AuthService {
     }
 
     /**
+     * 该第三方身份是否已经绑过账号。灰度闸用它区分"回访登录"与"建新号"——
+     * 只有后者才是灰度要拦的对象。查询失败保守当作不存在（宁可多拦一次，
+     * 也不能让一次 DB 抖动把闸变成放行）。
+     */
+    public boolean hasIdentity(String provider, String providerUserId) {
+        try {
+            return userIdentityRepository
+                    .findByProviderAndProviderUserId(provider, providerUserId)
+                    .isPresent();
+        } catch (Exception e) {
+            log.warn("查询 identity 失败（provider={}），保守视为不存在", provider, e);
+            return false;
+        }
+    }
+
+    /**
      * 维护 user_identities 双写：缺行则插入（惰性自愈），有则刷新 last_login_at。
      * 写失败不阻断登录——与 INV-003 lazy upgrade 同策略，记日志后继续，
      * 下次登录还会再试，绝不让 identity 写入把用户挡在门外。

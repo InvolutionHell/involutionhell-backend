@@ -18,6 +18,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
+import java.util.Set;
 
 /**
  * 第三方 OAuth 登录入口。provider 无关（github 内置 / discord 自定义 source）；
@@ -43,10 +44,16 @@ public class OAuthController {
     @Value("${justauth.type.discord.redirect-uri:}")
     private String discordRedirectUri;
 
-    // Discord 登录灰度白名单：逗号分隔的 Discord user id。非空=只放行名单内 id，
-    // 其他人在回调处被弹回 /login?error=discord_canary；空=对所有人开放（GA 时清空即可）。
+    // Discord 登录灰度白名单：逗号分隔的 Discord user id。配了值=只放行名单内 id
+    // （以及已有账号的回访登录），其余人在回调处被弹回 /login?error=discord_canary；
+    // 完全不配=闸关闭，对所有人开放（GA 就是清空它）。
     @Value("${auth.discord.allowlist:}")
-    private String discordAllowlist;
+    private String discordAllowlistRaw;
+
+    // 闸是否生效。由"是否配了非空值"决定，与解析出的 id 个数无关——配了值却解析不出
+    // 任何 id（只剩逗号/引号）时必须保持关闭状态而不是悄悄放开，见 initDiscordAllowlist。
+    private boolean discordGateActive;
+    private Set<String> discordAllowlist = Set.of();
 
     @Value("${AUTH_URL:http://localhost:3000}")
     private String frontEndUrl;
@@ -87,17 +94,80 @@ public class OAuthController {
         }
     }
 
-    // 灰度白名单判定：空名单=全开放；否则精确匹配某个 Discord user id。
-    private boolean discordAllowed(String discordUserId) {
-        if (discordAllowlist == null || discordAllowlist.isBlank()) {
+    /**
+     * 启动时解析白名单并**明确播报当前处于哪种模式**。缺 env 与故意 GA 在行为上
+     * 无法区分，只能靠这条日志区分——没有它，一次丢掉 AUTH_DISCORD_ALLOWLIST 的
+     * 部署会静默地把 Discord 对全网打开，而唯一信号是"没有拒绝日志"。
+     */
+    @jakarta.annotation.PostConstruct
+    void initDiscordAllowlist() {
+        configureDiscordAllowlist(discordAllowlistRaw);
+    }
+
+    // 与 @PostConstruct 分开，便于单测直接喂各种畸形取值。
+    void configureDiscordAllowlist(String raw) {
+        this.discordGateActive = raw != null && !raw.isBlank();
+        this.discordAllowlist = parseAllowlist(raw);
+        if (!discordGateActive) {
+            log.warn("[Discord 灰度] 未配置 auth.discord.allowlist → 闸关闭，Discord 登录对所有人开放");
+        } else if (discordAllowlist.isEmpty()) {
+            // 配了值却一个 id 都解析不出（典型：清列表时手滑留了个逗号）。保持闸关闭状态
+            // 拒绝所有人——错误方向选"没人能登"而不是"所有人能登"，并且必须吼出来。
+            log.error("[Discord 灰度] auth.discord.allowlist 配了值但解析不出任何 id（只剩逗号/引号？）"
+                    + " → 所有 Discord 登录都会被拒绝，包括本应放行的人");
+        } else {
+            log.info("[Discord 灰度] 闸已启用，{} 个 id 在白名单内；其余新用户会被拒", discordAllowlist.size());
+        }
+    }
+
+    /**
+     * 逗号分隔 → id 集合。丢掉空项（"a,,b" / 尾逗号）并剥掉引号——docker-compose 的
+     * env_file 不剥引号，AUTH_DISCORD_ALLOWLIST="123" 会把引号一起带进来，
+     * trim() 处理不了，会导致白名单本人也匹配不上。
+     */
+    static Set<String> parseAllowlist(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return Set.of();
+        }
+        return java.util.Arrays.stream(raw.split(","))
+                .map(String::trim)
+                .map(s -> s.replaceAll("^[\"']+|[\"']+$", "").trim())
+                .filter(s -> !s.isEmpty())
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+    }
+
+    /**
+     * 灰度放行判定。闸未启用=全放行（GA）。启用时放行两类人：白名单内的 id，以及
+     * **已经有账号的回访用户**——灰度要挡的是"建新号"（OTP wiring 未完成，新用户
+     * 可能被分叉出第二个账号），不是把已有账号的人锁在自己账号外面。
+     */
+    boolean discordAllowed(String discordUserId) {
+        if (!discordGateActive) {
             return true;
         }
-        for (String id : discordAllowlist.split(",")) {
-            if (id.trim().equals(discordUserId)) {
-                return true;
-            }
+        if (discordUserId == null || discordUserId.isBlank()) {
+            return false;
         }
-        return false;
+        if (discordAllowlist.contains(discordUserId)) {
+            return true;
+        }
+        return authService.hasIdentity("discord", discordUserId);
+    }
+
+    /**
+     * 拒绝后撤销刚换到的 access token。用户已经在 Discord 上点过授权、我们已经拿到
+     * 他的邮箱和 token，既然不让他登录，就别把用不上的授权和 token 留着。
+     * 失败不阻断——撤销只是清理，不能反过来把拒绝流程搞崩。
+     */
+    private void revokeDiscordToken(AuthRequest authRequest, AuthUser authUser) {
+        if (!(authRequest instanceof AuthDiscordRequest discord) || authUser == null) {
+            return;
+        }
+        try {
+            discord.revokeToken(authUser.getToken());
+        } catch (Exception e) {
+            log.warn("[Discord 灰度] 撤销 token 失败（不影响拒绝流程）: {}", e.getClass().getSimpleName());
+        }
     }
 
     // 仅用于排查日志：redirect_uri 是公开信息，不含密钥。
@@ -197,10 +267,11 @@ public class OAuthController {
 
         if (authResponse.ok()) {
             AuthUser authUser = (AuthUser) authResponse.getData();
-            // Discord 灰度：非白名单 id 在此弹回（换 token 已发生，但不建号/不登入）。
+            // Discord 灰度：不放行的 id 在此弹回（换 token 已发生，但不建号/不登入）。
             // 直连 /oauth/render/discord 绕过前端按钮的人也一并挡在这里。
             if ("discord".equals(provider) && !discordAllowed(authUser.getUuid())) {
-                log.info("[OAuth] discord 灰度：uuid={} 不在白名单，拒绝登录", authUser.getUuid());
+                log.info("[OAuth] discord 灰度：uuid={} 不在放行范围，拒绝登录", authUser.getUuid());
+                revokeDiscordToken(authRequest, authUser);
                 response.sendRedirect(frontEndUrl + "/login?error=discord_canary");
                 return;
             }
