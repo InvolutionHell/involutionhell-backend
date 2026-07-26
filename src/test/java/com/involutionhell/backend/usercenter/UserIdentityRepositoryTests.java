@@ -62,9 +62,39 @@ class UserIdentityRepositoryTests extends AbstractWebIntegrationTest {
                 .hasValueSatisfying(found -> assertThat(found.userId()).isEqualTo(userId));
         assertThat(repository.findByUserId(userId)).hasSize(1);
 
-        repository.touchLastLogin(saved.id());
+        repository.recordLogin(saved.id(), "a@e.com", "Nick");
         assertThat(repository.findByProviderAndProviderUserId("discord", puid))
                 .hasValueSatisfying(found -> assertThat(found.lastLoginAt()).isNotNull());
+    }
+
+    @Test
+    void recordLoginBackfillsEmptyLinkInfoButNeverOverwritesIt() {
+        // M0 回填出来的行只有 (user_id, provider, provider_user_id)，email/display_name 为空。
+        // 设置页靠 display_name_at_link 显示 "GitHub · 某某"，不补齐就永远只剩一个 provider 名。
+        long userId = createUser(null);
+        String puid = "backfill-" + userId;
+        UserIdentity backfilled = repository.insert(
+                new UserIdentity(null, userId, "github", puid, null, null, null, null));
+
+        repository.recordLogin(backfilled.id(), "first@e.com", "First");
+        assertThat(repository.findByProviderAndProviderUserId("github", puid))
+                .hasValueSatisfying(found -> {
+                    assertThat(found.emailAtLink()).isEqualTo("first@e.com");
+                    assertThat(found.displayNameAtLink()).isEqualTo("First");
+                });
+
+        // 已有值不被后来的登录改写——列名的 at_link 语义是"绑定当时的值"
+        repository.recordLogin(backfilled.id(), "changed@e.com", "Changed");
+        assertThat(repository.findByProviderAndProviderUserId("github", puid))
+                .hasValueSatisfying(found -> {
+                    assertThat(found.emailAtLink()).isEqualTo("first@e.com");
+                    assertThat(found.displayNameAtLink()).isEqualTo("First");
+                });
+
+        // 本次登录没拿到邮箱/名字时（参数为 null）不该把已有值抹成空
+        repository.recordLogin(backfilled.id(), null, null);
+        assertThat(repository.findByProviderAndProviderUserId("github", puid))
+                .hasValueSatisfying(found -> assertThat(found.emailAtLink()).isEqualTo("first@e.com"));
     }
 
     @Test
