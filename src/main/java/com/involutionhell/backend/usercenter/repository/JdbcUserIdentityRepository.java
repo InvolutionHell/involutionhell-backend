@@ -80,8 +80,16 @@ public class JdbcUserIdentityRepository implements UserIdentityRepository {
     }
 
     @Override
-    public void touchLastLogin(long id) {
-        jdbc.update("UPDATE user_identities SET last_login_at = CURRENT_TIMESTAMP WHERE id = ?", id);
+    public void recordLogin(long id, String emailAtLink, String displayNameAtLink) {
+        // COALESCE 只填空值，不覆盖已有的 at_link 值；本次登录若没拿到邮箱/名字，
+        // 参数为 null，COALESCE 结果仍是原值，等下次再补。一条 UPDATE 完成两件事。
+        jdbc.update("""
+                UPDATE user_identities
+                   SET last_login_at        = CURRENT_TIMESTAMP,
+                       email_at_link        = COALESCE(email_at_link, ?),
+                       display_name_at_link = COALESCE(display_name_at_link, ?)
+                 WHERE id = ?""",
+                emailAtLink, displayNameAtLink, id);
     }
 
     @Override

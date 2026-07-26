@@ -3,6 +3,7 @@ package com.involutionhell.backend.usercenter.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.verify;
@@ -424,7 +425,8 @@ class AuthServiceTests {
             authService.loginByGithub(ghUser);
         }
 
-        verify(userIdentityRepository).touchLastLogin(7L);
+        // 已有 identity 行：刷新登录时间的同时把本次拿到的邮箱/名字传下去补空
+        verify(userIdentityRepository).recordLogin(eq(7L), any(), any());
         verify(userIdentityRepository, org.mockito.Mockito.never()).insert(any());
     }
 

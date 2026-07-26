@@ -216,7 +216,9 @@ public class AuthService {
     }
 
     /**
-     * 维护 user_identities 双写：缺行则插入（惰性自愈），有则刷新 last_login_at。
+     * 维护 user_identities 双写：缺行则插入（惰性自愈），有行则刷新 last_login_at
+     * 并补齐仍为空的 email/display_name——回填建出来的行这两列一直是空的，
+     * 只更新时间戳的话设置页永远显示不出账号名。
      * 写失败不阻断登录——与 INV-003 lazy upgrade 同策略，记日志后继续，
      * 下次登录还会再试，绝不让 identity 写入把用户挡在门外。
      */
@@ -225,7 +227,8 @@ public class AuthService {
         try {
             userIdentityRepository.findByProviderAndProviderUserId(provider, providerUserId)
                     .ifPresentOrElse(
-                            existing -> userIdentityRepository.touchLastLogin(existing.id()),
+                            // 顺带补齐回填行留下的空 email/display_name（自愈，见 recordLogin）
+                            existing -> userIdentityRepository.recordLogin(existing.id(), email, displayName),
                             () -> userIdentityRepository.insert(new UserIdentity(
                                     null, userId, provider, providerUserId, email, displayName, null, null)));
         } catch (Exception e) {
