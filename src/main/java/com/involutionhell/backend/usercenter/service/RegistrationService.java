@@ -55,17 +55,22 @@ public class RegistrationService {
 
     private final ResendEmailService emailService;
     private final Ticker ticker;
+    private final boolean devConsoleOtp;
     private final Cache<String, RegSession> sessions;
 
     @org.springframework.beans.factory.annotation.Autowired
-    public RegistrationService(ResendEmailService emailService) {
-        this(emailService, Ticker.systemTicker());
+    public RegistrationService(
+            ResendEmailService emailService,
+            @org.springframework.beans.factory.annotation.Value("${registration.otp.dev-console:false}")
+            boolean devConsoleOtp) {
+        this(emailService, Ticker.systemTicker(), devConsoleOtp);
     }
 
     /** 供测试注入 FakeTicker，控制 OTP 过期与会话 TTL。 */
-    RegistrationService(ResendEmailService emailService, Ticker ticker) {
+    RegistrationService(ResendEmailService emailService, Ticker ticker, boolean devConsoleOtp) {
         this.emailService = emailService;
         this.ticker = ticker;
+        this.devConsoleOtp = devConsoleOtp;
         this.sessions = Caffeine.newBuilder()
                 .ticker(ticker)
                 .expireAfterWrite(SESSION_TTL)
@@ -132,11 +137,15 @@ public class RegistrationService {
             s.lastSendAtNanos = now;
             to = normalized;
         }
-        // 本地/CI 没配 Resend key 时：验证码直接打到控制台，让贡献者不配 Resend 也能
-        // 跑通完整注册流（Django/Rails 的 console email backend 同款）。生产必配 key，
-        // isConfigured() 为 true，走不到这里；这行只在开发环境出现。
-        if (!emailService.isConfigured()) {
-            log.warn("[DEV-OTP] Resend 未配置，验证码只打印到控制台（生产不应出现此行）: email={} code={}", to, code);
+        // 开发兜底：验证码直接打到控制台，让贡献者不配 Resend 也能跑通完整注册流
+        // （Django/Rails 的 console email backend 同款）。
+        // 必须由**显式开关**驱动，不能只看"Resend 没配"——后者同时也是生产掉 key 的
+        // 样子，那样 prod 一旦丢 key 就会假装发送成功，用户永远卡在输码页。
+        // 日志只落 pendingId + code，不落收件邮箱（PII，与本文件下方及
+        // ResendEmailService 的规则一致）；本地开发者自己知道填的哪个邮箱。
+        if (devConsoleOtp && !emailService.isConfigured()) {
+            log.warn("[DEV-OTP] 控制台兜底（registration.otp.dev-console=true），未真实发信: pendingId={} code={}",
+                    pendingId, code);
             return SendResult.SENT;
         }
         String html = "<p>你的 InvolutionHell 注册验证码是：</p>"

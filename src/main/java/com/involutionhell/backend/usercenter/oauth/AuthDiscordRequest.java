@@ -32,6 +32,8 @@ public class AuthDiscordRequest extends AuthDefaultRequest {
             .connectTimeout(Duration.ofSeconds(10))
             .build();
 
+    private static final String REVOKE_ENDPOINT = "https://discord.com/api/oauth2/token/revoke";
+
     public AuthDiscordRequest(AuthConfig config) {
         super(config, DiscordAuthSource.DISCORD);
     }
@@ -71,6 +73,24 @@ public class AuthDiscordRequest extends AuthDefaultRequest {
                 .tokenType(json.getString("token_type"))
                 .expireIn(json.getIntValue("expires_in"))
                 .build();
+    }
+
+    /**
+     * 撤销 access token。用于"已换完 token 才决定拒绝该用户"的场景（灰度闸）：
+     * 既然不让他登录，就别把用不上的 token 和授权留在他的 Discord 账号里。
+     * 端点不在 AuthSource 接口里，按 Discord 文档单列。
+     */
+    public void revokeToken(AuthToken authToken) {
+        if (authToken == null || authToken.getAccessToken() == null) {
+            return;
+        }
+        Map<String, String> form = new LinkedHashMap<>();
+        form.put("client_id", config.getClientId());
+        form.put("client_secret", config.getClientSecret());
+        form.put("token", authToken.getAccessToken());
+        form.put("token_type_hint", "access_token");
+        // 成功时 Discord 返 200 空 body，解析结果用不上，只要没抛异常即视为已撤销
+        postForm(REVOKE_ENDPOINT, form);
     }
 
     @Override

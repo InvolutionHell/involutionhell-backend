@@ -42,7 +42,7 @@ class RegistrationServiceTests {
 
     private final ResendEmailService email = mock(ResendEmailService.class);
     private final FakeTicker ticker = new FakeTicker();
-    private final RegistrationService svc = new RegistrationService(email, ticker);
+    private final RegistrationService svc = new RegistrationService(email, ticker, false);
 
     // 默认按"已配置 Resend"跑正常发信路径；dev-fallback 用例单独覆盖为 false。
     @BeforeEach
@@ -144,11 +144,36 @@ class RegistrationServiceTests {
 
     @Test
     void devConsoleFallbackWhenResendUnconfigured() {
-        when(email.isConfigured()).thenReturn(false); // 覆盖 @BeforeEach：本地没配 Resend
-        String pid = svc.begin(reg("a@e.com"));
+        ResendEmailService devEmail = mock(ResendEmailService.class);
+        when(devEmail.isConfigured()).thenReturn(false); // 本地没配 Resend
+        RegistrationService dev = new RegistrationService(devEmail, ticker, true);
+
+        String pid = dev.begin(reg("a@e.com"));
         // 不真发信，但流程照走（返回 SENT），验证码只进日志——贡献者本地读控制台即可
-        assertThat(svc.sendOtp(pid, "a@e.com")).isEqualTo(SendResult.SENT);
-        verify(email, never()).sendHtml(anyString(), anyString(), anyString());
+        assertThat(dev.sendOtp(pid, "a@e.com")).isEqualTo(SendResult.SENT);
+        verify(devEmail, never()).sendHtml(anyString(), anyString(), anyString());
+
+        // 关键：兜底必须发生在会话状态写入**之后**。若今后把 isConfigured() 检查上提到
+        // 生成验证码之前（很自然的 fail-fast 重构），otpCode/otpEmail 就不会被写入，
+        // 本地拿到码也 verifyAndConsume 不过 —— 本地流程静默坏掉而上面两条断言照过。
+        // 用"限流状态已计数"来锁定这个副作用。
+        assertThat(dev.getPending(pid)).isPresent();
+        assertThat(dev.sendOtp(pid, "a@e.com"))
+                .as("已发过一次，冷却期内再发应被限流——证明会话状态确实写进去了")
+                .isEqualTo(SendResult.RATE_LIMITED);
+    }
+
+    @Test
+    void withoutDevSwitchUnconfiguredResendIsARetryableFailure() {
+        // 没开 dev 开关时，Resend 未配置必须回到"发信失败"（可重试），而不是假装已发送——
+        // 否则生产掉了 key 就会让用户永远卡在输码页。
+        ResendEmailService prodEmail = mock(ResendEmailService.class);
+        when(prodEmail.isConfigured()).thenReturn(false);
+        when(prodEmail.sendHtml(anyString(), anyString(), anyString())).thenReturn(false);
+        RegistrationService prod = new RegistrationService(prodEmail, ticker, false);
+
+        String pid = prod.begin(reg("a@e.com"));
+        assertThat(prod.sendOtp(pid, "a@e.com")).isEqualTo(SendResult.SEND_FAILED);
     }
 
     @Test
