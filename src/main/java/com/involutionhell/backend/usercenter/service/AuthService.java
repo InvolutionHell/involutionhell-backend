@@ -25,6 +25,7 @@ public class AuthService {
     private final PasswordService passwordService;
     private final UserAccountRepository userAccountRepository;
     private final UserIdentityRepository userIdentityRepository;
+    private final com.involutionhell.backend.usercenter.oauth.AuthProviderRegistry providers;
 
     /**
      * 创建认证服务并注入用户与密码服务。
@@ -32,11 +33,13 @@ public class AuthService {
     public AuthService(UserCenterService userCenterService,
                        PasswordService passwordService,
                        UserAccountRepository userAccountRepository,
-                       UserIdentityRepository userIdentityRepository) {
+                       UserIdentityRepository userIdentityRepository,
+                       com.involutionhell.backend.usercenter.oauth.AuthProviderRegistry providers) {
         this.userCenterService = userCenterService;
         this.passwordService = passwordService;
         this.userAccountRepository = userAccountRepository;
         this.userIdentityRepository = userIdentityRepository;
+        this.providers = providers;
     }
 
     /**
@@ -184,19 +187,13 @@ public class AuthService {
 
     /**
      * provider 是否已验证该邮箱。只有 true 才允许按邮箱自动关联。
-     *   - discord：/users/@me 的 "verified" 布尔（Discord 已验证账号邮箱）
-     *   - github：JustAuth 取的是 primary email，GitHub 要求 primary 已验证，信任
-     *   - 其它未知 provider：保守返回 false，不自动关联
+     * 判定下沉到各 AuthProvider 实现（接新 provider 不用改这里）；
+     * 未注册的 provider 保守返回 false，绝不自动关联。
      */
     private boolean isProviderEmailVerified(String provider, AuthUser authUser) {
-        return switch (provider) {
-            case "discord" -> {
-                com.alibaba.fastjson.JSONObject raw = authUser.getRawUserInfo();
-                yield raw != null && raw.getBooleanValue("verified");
-            }
-            case "github" -> true;
-            default -> false;
-        };
+        return providers.find(provider)
+                .map(p -> p.isEmailVerified(authUser))
+                .orElse(false);
     }
 
     /**
