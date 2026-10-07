@@ -169,3 +169,16 @@
   在那之前清空它等于提前放开分叉风险。
 - **历史**：2026-07-24 随 Discord 灰度（#53 / involutionhell#389）引入，
   2026-07-25 按 xhigh review（#54）补齐本不变量与测试。
+
+## INV-009 · docker-compose 的端口映射一律只绑 127.0.0.1
+
+- **保护点**：`docker-compose.yml`（所有服务的 ports 段；目前是 backend 8080、postgres 5432、pgadmin 8082）
+- **测试**：`SecurityInvariantsTests#docker_compose里所有端口映射必须绑127_0_0_1`
+- **为什么**：公网入口只有 Caddy（Cloudflare → api.involutionhell.com → 127.0.0.1:8080）。
+  Docker 发布的端口走 nat 表 DNAT，不经过主机 INPUT 链，主机 iptables 挡不住；
+  Oracle 的安全列表也不按端口过滤。backend 原来是 `"8080:8080"`，等于把 Spring 直接
+  摆在公网上：绕过 Cloudflare 的防护、明文 HTTP、actuator 等端点谁都能直连。
+  Caddy 是 host 网络、ChatBot 跑在宿主机上，都走 127.0.0.1:8080，不需要对外绑定。
+  INV-005a 只管 5432，这条覆盖所有端口，以后新加服务也一样。
+- **历史**：2026-10-07 在服务器上抓包，3 分钟内有 4 个外网扫描器连到 8080，从公网 IP 访问
+  `/actuator/metrics` 返回 200；随本不变量改成 `127.0.0.1:8080:8080`。

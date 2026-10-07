@@ -38,8 +38,12 @@ services:
       # GitHub REST API token：DocHistoryService 调 /repos/.../commits 需要，
       # 匿名限流 60/hour，带 token 5000/hour。未设置时 service 仍可用，只是容易被限流。
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+    # 只 bind 到 loopback（INV-009）。公网流量一律走 Cloudflare → Caddy（api.involutionhell.com），
+    # Caddy（host 网络）和 ChatBot 都直连 127.0.0.1:8080，不受影响。
+    # Docker 发布端口走 nat 表 DNAT，不经过主机 INPUT 链，iptables 挡不住；
+    # Oracle 安全列表也不按端口过滤——2026-10-07 抓包看到外网扫描器直连 8080。
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     volumes:
       # 挂载主机 ga4-sa-key.json 到容器，避免把 service account 私钥打进镜像。
       # 主机文件必须存在（可以是空文件，Spring 会识别为无效走 stub），否则 docker compose up 会失败。

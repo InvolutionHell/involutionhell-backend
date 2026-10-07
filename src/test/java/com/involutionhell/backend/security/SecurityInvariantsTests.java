@@ -343,6 +343,49 @@ class SecurityInvariantsTests extends AbstractWebIntegrationTest {
                 .doesNotContain(":-change_me}");
     }
 
+    // ============================================================
+    // INV-009 · docker-compose 的所有端口映射只绑 127.0.0.1
+    // 见 SECURITY.md / docker-compose.yml
+    // ============================================================
+
+    /**
+     * INV-009：docker-compose.yml 里每个 ports 段的每一项都必须以 127.0.0.1: 起头。
+     *
+     * 比 INV-005a 宽：不看是哪个容器端口，"8080:8080"、"0.0.0.0:..."、只写容器端口的
+     * "8080"（随机 host 端口，照样绑全网）都算违规。公网入口只有 Caddy。
+     */
+    @Test
+    void docker_compose里所有端口映射必须绑127_0_0_1() throws Exception {
+        java.util.List<String> lines = Files.readAllLines(locateComposeFile());
+        java.util.List<String> violations = new java.util.ArrayList<>();
+        for (int i = 0; i < lines.size(); i++) {
+            if (!lines.get(i).strip().equals("ports:")) {
+                continue;
+            }
+            int indent = indentOf(lines.get(i));
+            for (int j = i + 1; j < lines.size(); j++) {
+                String line = lines.get(j);
+                if (line.isBlank() || line.strip().startsWith("#")) {
+                    continue;
+                }
+                if (indentOf(line) <= indent) {
+                    break;
+                }
+                String entry = line.strip().replaceFirst("^-\\s*", "").replace("\"", "").replace("'", "");
+                if (!entry.startsWith("127.0.0.1:")) {
+                    violations.add(line.strip());
+                }
+            }
+        }
+        Assertions.assertThat(violations)
+                .as("docker-compose.yml 的端口映射必须只绑 127.0.0.1；检测到: %s", violations)
+                .isEmpty();
+    }
+
+    private static int indentOf(String line) {
+        return line.length() - line.stripLeading().length();
+    }
+
     /**
      * 解析 docker-compose.yml 的位置——maven test 工作目录就是 backend/ 仓库根。
      */
