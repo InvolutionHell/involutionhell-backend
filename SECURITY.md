@@ -182,3 +182,50 @@
   INV-005a 只管 5432，这条覆盖所有端口，以后新加服务也一样。
 - **历史**：2026-10-07 在服务器上抓包，3 分钟内有 4 个外网扫描器连到 8080，从公网 IP 访问
   `/actuator/metrics` 返回 200；随本不变量改成 `127.0.0.1:8080:8080`。
+
+## INV-010 · IH 通行证：只给登记过的 client 签码，换码必须 client secret + PKCE
+
+- **保护点**：
+  - `sso/service/SsoService#issueCode`（`POST /oauth/sso/code`，需要登录）：client 必须在 `sso.clients`
+    表里且已启用；`redirectUri` 与登记值逐字相等（不做前缀、通配，不归一化大小写、尾斜杠、query）；
+    只收 `codeChallengeMethod=S256` 和 43 位 base64url 的 `codeChallenge`；disabled 账号 403。
+    码存在进程内 Caffeine，60 秒过期。
+  - `sso/service/SsoService#authenticateClient`（`POST /internal/sso/token`）：client 已启用，且
+    `clientSecret` 用 `MessageDigest.isEqual` 常量时间比较；不过就 401 `invalid_client`，**并且不碰码**。
+  - `sso/service/SsoService#redeem`：`asMap().remove` 取码即作废（只能用一次）；clientId、redirectUri、
+    `codeVerifier`（格式 + S256 常量时间比较）任一不符，或账号此时已不存在 / 被禁用，都是 400
+    `invalid_grant`，码不可重试；成功只返回 `sub/username/displayName/avatarUrl`（`sso/dto/SsoUserInfo`）。
+  - `sso/config/SsoProperties.Client#enabled`：secret 或 redirect-uri 为空即未启用，两个接口都拒绝
+    （fail closed）；`SsoService` 构造时在启动日志里逐个播报 client 启用与否，不打 secret。
+  - `common/config/SaTokenConfigure`：只放行 `/internal/sso/token` 这一条精确路径，`/oauth/sso/code` 不放行。
+- **测试**：
+  - `SsoControllerIntegrationTests#seedAccountCanSignInAndGetsOnlyTheMinimalProfile`（端到端 + 返回字段白名单）
+  - `SsoControllerIntegrationTests#profileNeverCarriesEmailRolesPermissionsOrToken`
+  - `SsoControllerIntegrationTests#issuingCodeRequiresLogin`
+  - `SsoControllerIntegrationTests#redirectUriMustMatchTheRegisteredValueExactly`
+  - `SsoControllerIntegrationTests#unknownClientCannotGetCode`
+  - `SsoControllerIntegrationTests#malformedPkceOrStateIsRejected`
+  - `SsoControllerIntegrationTests#stateLengthBoundsAreInclusive`（反向）
+  - `SsoControllerIntegrationTests#disabledAccountCannotGetCode`
+  - `SsoControllerIntegrationTests#clientWithEmptySecretIsRejectedByBothEndpoints`
+  - `SsoControllerIntegrationTests#wrongSecretIsInvalidClientAndDoesNotBurnTheCode`
+  - `SsoControllerIntegrationTests#codeCanOnlyBeRedeemedOnce`
+  - `SsoControllerIntegrationTests#wrongVerifierBurnsTheCode`
+  - `SsoControllerIntegrationTests#verifierFormatIsEnforcedEvenWhenItsHashMatches`
+  - `SsoControllerIntegrationTests#redirectUriAtRedemptionMustMatchTheCode`
+  - `SsoControllerIntegrationTests#anotherClientCannotRedeemTheCode`
+  - `SsoControllerIntegrationTests#accountDisabledAfterCodeWasIssuedCannotRedeem`
+  - `SsoServiceTests#codeExpiresAfter60Seconds`（假时钟）
+  - `SsoServiceTests#clientNeedsBothSecretAndRedirectUriToBeEnabled`
+- **为什么**：签码等于 IH 替用户向别的站点担保"这是谁"，任何一环松了都是账号接管：
+  1. redirect_uri 一旦放宽成前缀或通配，攻击者构造 `/sso/authorize?redirect_uri=<自己的地址>`，
+     受害者点"继续"，码就直接送到攻击者手里——OAuth 最常见的被打穿方式。
+  2. 码会经过地址栏、浏览历史、Referer 和各种日志。PKCE 让偷到码的人换不出东西（verifier 只在
+     HoloCard 的 HttpOnly cookie 里）；60 秒过期 + 只能用一次压缩重放窗口；核对不上就作废，不给反复试。
+  3. `/internal/sso/token` 必须进 notMatch（调用方没有 IH 登录态），而 Caddy 把所有路径原样转给 8080，
+     这条路径公网可达，client secret 是唯一的门：比较要常量时间；secret 为空必须拒绝——空串对空串
+     `MessageDigest.isEqual` 判相等，漏配 env 就等于换码接口不设防。启动播报的理由同 INV-008：
+     漏配和故意停用行为上一样，只能靠日志区分。没过 client 鉴权的请求不能碰码，否则谁都能烧掉别人的码。
+  4. 交出去的资料只够对方建自己的会话。email、角色、权限不给（对方用不上，泄露面越小越好）；
+     IH 的 satoken 绝不出 IH——给出去，HoloCard 一旦被攻破就能以用户身份操作 IH。
+- **历史**：2026-10-07 随 HoloCard 接入 IH 通行证引入（授权码 + PKCE S256；client 表目前只有 holocard）。

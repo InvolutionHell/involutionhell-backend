@@ -52,6 +52,10 @@ public class SaTokenConfigure implements WebMvcConfigurer {
                 // 不要求 sa-token 登录态。Controller 自己校验密钥。
                 // 用 /** 覆盖子路径（/internal 提交 + /internal/summary 查询）。
                 .notMatch("/api/community/links/internal", "/api/community/links/internal/**")
+                // IH 通行证换码（INV-010）：调用方是 HoloCard 等 client 的服务端，没有 IH 登录态。
+                // SsoController 自己用 client secret 鉴权（常量时间比较，secret 未配置即拒绝）。
+                // 只放行这一条精确路径；签码的 /oauth/sso/code 需要登录，不能加进来。
+                .notMatch("/internal/sso/token")
                 .notMatch("/api/chat/sessions/save")       // AI 对话持久化（匿名 / 登录都写，登录时自动关联 userId）
                 // Posts 公开读接口：
                 //   GET /api/posts/feed                  - /feed 原创 Tab 列表（匿名可访问）
