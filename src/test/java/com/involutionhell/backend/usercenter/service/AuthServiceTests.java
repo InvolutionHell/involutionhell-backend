@@ -44,8 +44,21 @@ class AuthServiceTests {
     @Mock
     private com.involutionhell.backend.usercenter.repository.UserIdentityRepository userIdentityRepository;
 
-    @InjectMocks
     private AuthService authService;
+
+    /**
+     * 用**真实**的 AuthProviderRegistry + 真实 provider 实例，而不是 mock：
+     * "该 provider 的邮箱算不算已验证"是自动关联的安全判据，这里要测真逻辑。
+     * client-id/secret 随便给，本测试不发起真实 OAuth 请求。
+     */
+    @org.junit.jupiter.api.BeforeEach
+    void wireAuthService() {
+        var registry = new com.involutionhell.backend.usercenter.oauth.AuthProviderRegistry(java.util.List.of(
+                new com.involutionhell.backend.usercenter.oauth.GithubAuthProvider("id", "secret", "http://cb/github"),
+                new com.involutionhell.backend.usercenter.oauth.DiscordAuthProvider("id", "secret", "http://cb/discord")));
+        authService = new AuthService(userCenterService, passwordService,
+                userAccountRepository, userIdentityRepository, registry);
+    }
 
     /**
      * identity 双写默认：缺行（Optional.empty）→ ensureIdentity 走 insert 路径。

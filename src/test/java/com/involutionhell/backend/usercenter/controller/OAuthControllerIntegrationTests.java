@@ -156,4 +156,23 @@ class OAuthControllerIntegrationTests extends AbstractWebIntegrationTest {
                 .isNotNull()
                 .endsWith("/login?error=oauth_failed");
     }
+
+    // =============================================
+    // GET /oauth/bind/{provider} — 绑定发起（M2b）
+    // =============================================
+
+    @Test
+    void bindEntryRequiresLogin() throws Exception {
+        // INV-007：绑定目标账号只能来自服务端校验过的会话。未登录就发起绑定必须被拒，
+        // 否则"绑定到哪个账号"就只能取自客户端可控输入 = 绑定劫持。
+        mockMvc.perform(get("/oauth/bind/github"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void bindEntryRequiresLoginEvenForUnknownProvider() throws Exception {
+        // 鉴权必须先于 provider 解析，否则未登录者能通过响应差异探测支持哪些 provider
+        mockMvc.perform(get("/oauth/bind/myspace"))
+                .andExpect(status().isUnauthorized());
+    }
 }

@@ -135,12 +135,20 @@
   - `OAuthControllerIntegrationTests#callbackWithoutStateCookieIsRejectedBeforeTokenExchange`
   - `OAuthControllerIntegrationTests#callbackWithMatchingStateCookieProceedsPastStateCheck`（反向）
   - `OAuthControllerIntegrationTests#renderSetsStateCookie`（前置条件）
+  - `OAuthControllerIntegrationTests#bindEntryRequiresLogin`（绑定入口鉴权）
+  - `OAuthControllerIntegrationTests#bindEntryRequiresLoginEvenForUnknownProvider`
 - **为什么**：callback 是 provider 发起的顶级 GET，不带 Authorization header；若
   直接信任 URL `state`（尤其未来绑定流程把 loginId 塞进 state），攻击者可发起
   流程拿到合法 state 诱导受害者授权，把受害者的第三方身份绑/登进攻击者预期的
   账号（登录 CSRF / 绑定劫持）。防线：state 必须回证到"发起本次流程的同一浏览器"
   ——即 render 时种下、callback 时比对的 cookie，攻击者无法向受害者浏览器种此
-  cookie。绑定目标账号（M2）同理只能来自服务端校验过的当前会话，绝不取自 state。
+  cookie。
+
+  **绑定流程（M2b，已实现）同理**：`/oauth/bind/{provider}` 带 `@SaCheckLogin`，
+  userId 取自服务端已校验的会话；以随机 state 为 key 把它存进服务端内存
+  （`OAuthController#bindIntents`，5 分钟 TTL、一次性消费），回调时取回并**二次核对
+  当前会话仍是同一个人**（中途登出/换号即拒绝）。state 在此仅作不可猜测的查找键，
+  不承载任何可信信息——把 userId 写进 state 就等于把绑定劫持焊死进流程。
 - **历史**：2026-07-19 随多 provider 身份体系 M1 引入（RFC #42 / ADR-001）。
   编号说明：INV-006 已被"付费 LLM 端点限流"占用，按流水规则用 INV-007。
 
