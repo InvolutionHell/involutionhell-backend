@@ -215,6 +215,16 @@ class SsoControllerIntegrationTests extends AbstractWebIntegrationTest {
     // ── client 未启用 ────────────────────────────────────────────────────────
 
     @Test
+    void stagingClientFromApplicationPropertiesBindsWithItsDashedId() {
+        // application.properties 里登记的 holocard-staging：id 带横线也要原样进 client 表；
+        // 测试环境没配 SSO_HOLOCARD_STAGING_SECRET，所以在表里但未启用
+        assertThat(ssoProperties.clients()).containsKey("holocard-staging");
+        SsoProperties.Client staging = ssoProperties.clients().get("holocard-staging");
+        assertThat(staging.redirectUri()).isEqualTo("https://holocard.staging.longsizhuo.com/auth/callback");
+        assertThat(staging.enabled()).isFalse();
+    }
+
+    @Test
     void clientWithEmptySecretIsRejectedByBothEndpoints() throws Exception {
         // 前提：dormant 确实进了 client 表、只是没 secret；否则这条测的只是"未知 client"
         assertThat(ssoProperties.clients()).containsKey("dormant");

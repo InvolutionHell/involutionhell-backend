@@ -41,6 +41,8 @@ services:
       # IH 通行证（INV-010）：HoloCard 换码时带的 client secret，和 HoloCard 那边配同一个值。
       # 留空 = holocard 这个 client 未启用，签码/换码接口都拒绝，启动日志会打 [SSO] 警告。
       SSO_HOLOCARD_SECRET: ${SSO_HOLOCARD_SECRET:-}
+      # HoloCard staging 的 client（和线上分开的 secret、回跳地址），留空 = 未启用
+      SSO_HOLOCARD_STAGING_SECRET: ${SSO_HOLOCARD_STAGING_SECRET:-}
     # 只 bind 到 loopback（INV-009）。公网流量一律走 Cloudflare → Caddy（api.involutionhell.com），
     # Caddy（host 网络）和 ChatBot 都直连 127.0.0.1:8080，不受影响。
     # Docker 发布端口走 nat 表 DNAT，不经过主机 INPUT 链，iptables 挡不住；

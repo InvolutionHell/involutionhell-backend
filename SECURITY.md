@@ -217,6 +217,7 @@
   - `SsoControllerIntegrationTests#accountDisabledAfterCodeWasIssuedCannotRedeem`
   - `SsoServiceTests#codeExpiresAfter60Seconds`（假时钟）
   - `SsoServiceTests#clientNeedsBothSecretAndRedirectUriToBeEnabled`
+  - `SsoControllerIntegrationTests#stagingClientFromApplicationPropertiesBindsWithItsDashedId`
 - **为什么**：签码等于 IH 替用户向别的站点担保"这是谁"，任何一环松了都是账号接管：
   1. redirect_uri 一旦放宽成前缀或通配，攻击者构造 `/sso/authorize?redirect_uri=<自己的地址>`，
      受害者点"继续"，码就直接送到攻击者手里——OAuth 最常见的被打穿方式。
@@ -228,4 +229,5 @@
      漏配和故意停用行为上一样，只能靠日志区分。没过 client 鉴权的请求不能碰码，否则谁都能烧掉别人的码。
   4. 交出去的资料只够对方建自己的会话。email、角色、权限不给（对方用不上，泄露面越小越好）；
      IH 的 satoken 绝不出 IH——给出去，HoloCard 一旦被攻破就能以用户身份操作 IH。
-- **历史**：2026-10-07 随 HoloCard 接入 IH 通行证引入（授权码 + PKCE S256；client 表目前只有 holocard）。
+- **历史**：2026-10-07 随 HoloCard 接入 IH 通行证引入（授权码 + PKCE S256）。client 表：`holocard`（线上）、
+  `holocard-staging`（HoloCard 的 staging 跑着没合并的 PR，单独的 secret 和回跳地址，拿到的码换不了线上的会话）。
