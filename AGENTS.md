@@ -20,6 +20,10 @@
    `column "x" does not exist`。init.sql 的每张表列集必须与 schema.sql 逐列一致
    （这条正是 INV-004 `user_follows` 事故的教训扩展）。
 
+   **唯一例外：可登录的 seed 账号**（admin/alice/auditor）只放 `init.sql` 和
+   `test-schema.sql`，**绝不能同步进 `schema.sql`**——它在生产每次启动都跑，
+   会把 README 公开的默认密码写进生产库（INV-011，2026-10 真实发生过）。
+
 2. **schema.sql 里的任何 DML 必须幂等**：它每次启动都重跑。回填用
    `INSERT ... ON CONFLICT DO NOTHING`，seed 用 `ON CONFLICT DO NOTHING/UPDATE`。
    非幂等语句会在第二次启动 `spring.sql.init` 报错、后端拒绝启动。

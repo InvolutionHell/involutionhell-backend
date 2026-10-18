@@ -13,8 +13,9 @@ CREATE TABLE IF NOT EXISTS user_accounts (
     preferences   VARCHAR(4000) NOT NULL DEFAULT '{}'
 );
 
--- 种子账号（与生产保持一致）逐行插入，H2 兼容写法
--- 哈希格式：bcrypt(cost=10) —— INV-003 起点；明文与生产一致 (Admin@123456 等)
+-- 种子账号（仅测试用，与 docker/init-db/init.sql 一致）逐行插入，H2 兼容写法。
+-- 生产 schema.sql 不 seed 可登录账号（INV-011）。
+-- 哈希格式：bcrypt(cost=10) —— INV-003 起点；明文见 README (Admin@123456 等)
 MERGE INTO user_accounts (username, password_hash, display_name, enabled, roles, permissions)
     KEY (username)
     VALUES ('admin', '$2b$10$Bfnw8v.BsXeZVPbre94sJeokgEfKuCLsdH7ckJxzxn5nxirHJHmP.', 'Admin', TRUE, 'admin', 'user:profile:read,user:center:read,user:center:manage');

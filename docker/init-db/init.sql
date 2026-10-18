@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS user_accounts (
     preferences   JSONB        NOT NULL DEFAULT '{}'::jsonb
 );
 
--- Default seeds for user_accounts
+-- Default seeds for user_accounts —— 仅本地开发库（数据卷首次创建时写入一次）。
+-- 生产 schema.sql 不 seed 这些账号（INV-011），别把它们"同步"回 schema.sql。
 -- admin / Admin@123456
 -- alice / Alice@123456
 -- auditor / Audit@123456

@@ -265,7 +265,7 @@ class SecurityInvariantsTests extends AbstractWebIntegrationTest {
     /**
      * INV-003：seed 账号能用明文密码登录 = bcrypt seed 与 dual-mode matches 端到端联通。
      *
-     * 防回归：如果有人误把 schema.sql / test-schema.sql 的 password_hash 回退到
+     * 防回归：如果有人误把 init.sql / test-schema.sql 的 password_hash 回退到
      * 不可用的格式（错的 bcrypt / 错的明文），AbstractWebIntegrationTest 的
      * loginAndGetToken 会在 jsonPath 断言阶段抛 AssertionError，本测试随之红。
      *
@@ -379,6 +379,35 @@ class SecurityInvariantsTests extends AbstractWebIntegrationTest {
         }
         Assertions.assertThat(violations)
                 .as("docker-compose.yml 的端口映射必须只绑 127.0.0.1；检测到: %s", violations)
+                .isEmpty();
+    }
+
+    // ============================================================
+    // INV-011 · schema.sql 不得 seed 可登录的账号
+    // 见 SECURITY.md / schema.sql
+    // ============================================================
+
+    /**
+     * INV-011：schema.sql 里不能出现任何 PasswordService.matches 会接受的哈希字面量。
+     *
+     * schema.sql 在生产每次启动都跑（SPRING_SQL_INIT_MODE=always），里面的 seed 账号
+     * 会带着 README 公开的默认密码落进生产库。matches 只认两种格式：bcrypt
+     * （$2[aby]$NN$...）和 legacy 裸 SHA-256（64 位十六进制），两种都扫，注释也扫。
+     * 不可登录的系统账号（discord-bridge，password_hash='!'）不受影响。
+     * 本地/测试的 seed 只放 docker/init-db/init.sql 和 test-schema.sql。
+     */
+    @Test
+    void schema_sql里不允许seed带密码哈希的账号() throws Exception {
+        String schema = new String(
+                getClass().getResourceAsStream("/schema.sql").readAllBytes(),
+                java.nio.charset.StandardCharsets.UTF_8);
+        Pattern loginableHash = Pattern.compile("\\$2[aby]\\$\\d{2}\\$|\\b[0-9a-fA-F]{64}\\b");
+        java.util.List<String> hits = loginableHash.matcher(schema).results()
+                .map(java.util.regex.MatchResult::group)
+                .toList();
+        Assertions.assertThat(hits)
+                .as("schema.sql 在生产每次启动都会执行，不能带可登录的密码哈希；"
+                        + "本地/测试 seed 放 docker/init-db/init.sql 与 test-schema.sql。检测到: %s", hits)
                 .isEmpty();
     }
 

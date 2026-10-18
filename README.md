@@ -84,7 +84,7 @@ cp .env.example .env
 
 ```bash
 # 启动 PostgreSQL 18
-# 此操作会自动创建 Schema 并初始化种子数据 (一致性与 NEON 保持同步)
+# 此操作会自动创建 Schema 并初始化本地种子账号（只在本地库首次建卷时写入，生产不会有）
 docker compose up -d postgres
 ```
 
@@ -166,7 +166,8 @@ Get-Content .env | Where-Object { $_ -match '^[^#].+=' } | ForEach-Object {
 默认接口入口：`http://127.0.0.1:8080`
 
 ### 5. 调用示例接口
-内置种子账号：
+本地种子账号（来自 `docker/init-db/init.sql`，只存在于本地 docker 库和测试库；
+生产跑的 `schema.sql` 不 seed 任何可登录账号，见 SECURITY.md INV-011）：
 - `admin / Admin@123456`
 - `alice / Alice@123456`
 

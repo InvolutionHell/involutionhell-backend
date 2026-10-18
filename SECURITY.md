@@ -61,8 +61,7 @@
   - `usercenter/service/PasswordService#hash`（始终输出 bcrypt）
   - `usercenter/service/PasswordService#matches`（dual-mode：bcrypt + legacy SHA-256）
   - `usercenter/service/AuthService#login`（lazy upgrade：登录成功后把 legacy hash 就地升级）
-  - `src/main/resources/schema.sql`（seed bcrypt 哈希）
-  - `docker/init-db/init.sql`（seed bcrypt 哈希）
+  - `docker/init-db/init.sql`（seed bcrypt 哈希；schema.sql 不再 seed，见 INV-011）
   - `src/test/resources/test-schema.sql`（seed bcrypt 哈希）
 - **测试**：
   - `PasswordServiceTests#hashGeneratesBcryptOutput`
@@ -231,3 +230,19 @@
      IH 的 satoken 绝不出 IH——给出去，HoloCard 一旦被攻破就能以用户身份操作 IH。
 - **历史**：2026-10-07 随 HoloCard 接入 IH 通行证引入（授权码 + PKCE S256）。client 表：`holocard`（线上）、
   `holocard-staging`（HoloCard 的 staging 跑着没合并的 PR，单独的 secret 和回跳地址，拿到的码换不了线上的会话）。
+
+## INV-011 · schema.sql 不得 seed 可登录的账号
+
+- **保护点**：
+  - `src/main/resources/schema.sql`：不含任何 seed 账号的密码哈希；唯一的系统账号 `discord-bridge`
+    用 `password_hash='!'` + `enabled=FALSE`，登录不了
+  - `docker/init-db/init.sql`、`src/test/resources/test-schema.sql`：admin/alice/auditor 只在这两处 seed
+- **测试**：`SecurityInvariantsTests#schema_sql里不允许seed带密码哈希的账号`（扫 schema.sql 里
+  `PasswordService.matches` 认的两种格式：bcrypt `$2[aby]$NN$` 和 64 位十六进制的 legacy SHA-256，注释也扫）
+- **为什么**：生产 `SPRING_SQL_INIT_MODE=always`，schema.sql 每次启动都跑。seed 写在这里，
+  生产库就有 admin/alice/auditor 三个启用账号，密码是 README 里公开的默认值，admin 还带 admin 角色，
+  而 `/auth/login` 公网可达、没有限流。AGENTS.md 的"三处 schema 同步"规则在这里是例外：
+  seed 不能"同步"回 schema.sql。
+- **历史**：2026-10-18 审计发现生产库这三个账号处于启用状态，只读核对确认哈希对得上公开密码。
+  本不变量把 seed 移出 schema.sql，只保证以后的启动不再写入；生产里已有的三行要另外处理，
+  删掉 seed 不会动它们。

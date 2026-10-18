@@ -17,19 +17,9 @@ CREATE TABLE IF NOT EXISTS user_accounts (
 -- 偏好设置列（JSONB 顶层合并，前端可自由扩展 key）
 ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS preferences JSONB NOT NULL DEFAULT '{}'::jsonb;
 
--- 默认种子账号（已存在则跳过）
--- admin / Admin@123456
--- alice / Alice@123456
--- auditor / Audit@123456
---
--- 哈希格式：bcrypt(cost=10) —— INV-003 起点。老库里仍可能保留裸 SHA-256 哈希，
--- 由 PasswordService.matches 兼容识别 + AuthService 在登录成功后做 lazy upgrade
--- 就地迁移为 bcrypt。生产首次部署的新库直接使用 bcrypt seed，不再有 SHA-256 裸值。
-INSERT INTO user_accounts (username, password_hash, display_name, enabled, roles, permissions)
-VALUES ('admin',   '$2b$10$Bfnw8v.BsXeZVPbre94sJeokgEfKuCLsdH7ckJxzxn5nxirHJHmP.', 'Admin',   TRUE, 'admin',   'user:profile:read,user:center:read,user:center:manage'),
-       ('alice',   '$2b$10$BmtVOmPK8Os/xreOTImsdec1fAA8Y9iTm1D823swYucSI2NDFdk.q', 'Alice',   TRUE, 'user',    'user:profile:read'),
-       ('auditor', '$2b$10$/1OfzhrA6CITrjJsDbzk.uMLq6cHa/iOP./wL2BAPo9t7QRq7Ca5W', 'Auditor', TRUE, 'auditor', 'user:profile:read,user:center:read')
-ON CONFLICT (username) DO NOTHING;
+-- 这里不放可登录的 seed 账号（INV-011）：本文件在生产每次启动都会执行，
+-- 带默认密码的 admin/alice/auditor 会原样落进生产库。本地开发的 seed 在
+-- docker/init-db/init.sql，测试的 seed 在 src/test/resources/test-schema.sql。
 
 -- Discord 桥接系统账号（不可登录）。
 -- 双重禁用：
