@@ -411,6 +411,35 @@ class SecurityInvariantsTests extends AbstractWebIntegrationTest {
                 .isEmpty();
     }
 
+    // ============================================================
+    // INV-012 · 新账号只经 OTP 验证建号；provider token 不落库
+    // 见 SECURITY.md / AuthService#completeRegistration
+    // ============================================================
+
+    /**
+     * INV-012：账号表与身份表不能有存 provider access/refresh token 的列。
+     *
+     * 我们只用 token 换一次用户资料（拒绝/失败时还会立刻撤销），之后再也用不上；
+     * 落库只会把"拖库"升级成"拿着用户的 GitHub/Discord 授权去调对方 API"。
+     * 扫 schema.sql（唯一真相源）里这两张表的 CREATE TABLE 与 ALTER TABLE，注释不算。
+     */
+    @Test
+    void 账号表和身份表不存第三方token() throws Exception {
+        String schema = new String(
+                getClass().getResourceAsStream("/schema.sql").readAllBytes(),
+                java.nio.charset.StandardCharsets.UTF_8)
+                .replaceAll("--[^\\n]*", "");
+        java.util.List<String> ddl = Pattern.compile(
+                        "(?is)(CREATE TABLE IF NOT EXISTS|ALTER TABLE)\\s+(user_accounts|user_identities)\\b.*?;")
+                .matcher(schema).results()
+                .map(java.util.regex.MatchResult::group)
+                .toList();
+        Assertions.assertThat(ddl).as("应能找到两张表的 DDL").hasSizeGreaterThanOrEqualTo(2);
+        Assertions.assertThat(ddl)
+                .as("user_accounts / user_identities 不能有 token/secret 列")
+                .noneMatch(stmt -> Pattern.compile("(?i)token|secret").matcher(stmt).find());
+    }
+
     private static int indentOf(String line) {
         return line.length() - line.stripLeading().length();
     }

@@ -136,10 +136,14 @@
   - `OAuthControllerIntegrationTests#renderSetsStateCookie`（前置条件）
   - `OAuthControllerIntegrationTests#bindEntryRequiresLogin`（绑定入口鉴权）
   - `OAuthControllerIntegrationTests#bindEntryRequiresLoginEvenForUnknownProvider`
+  - `OAuthControllerIntegrationTests#bindStartIsNotAcceptedViaGet`
+  - `OAuthControllerIntegrationTests#bindStartReturnsAuthorizeUrlAndSetsStateAndMarkerCookies`（反向）
+  - `OAuthControllerIntegrationTests#bindStartWithUnknownProviderIsJson4xxAndSetsNoCookies`
   - `OAuthControllerIntegrationTests#bindCallbackInSameSessionAttachesIdentityWithoutCreatingAccount`（反向）
   - `OAuthControllerIntegrationTests#bindCallbackAfterLogoutIsRejected`
   - `OAuthControllerIntegrationTests#bindCallbackUnderAnotherUsersSessionIsRejected`
   - `OAuthControllerIntegrationTests#replayedBindCallbackIsRejectedInsteadOfFallingIntoLogin`
+  - `OAuthControllerIntegrationTests#bindThatOutlivesStateCookieReturnsToSettingsNotLogin`
 - **为什么**：callback 是 provider 发起的顶级 GET，不带 Authorization header；若
   直接信任 URL `state`（尤其未来绑定流程把 loginId 塞进 state），攻击者可发起
   流程拿到合法 state 诱导受害者授权，把受害者的第三方身份绑/登进攻击者预期的
@@ -147,16 +151,23 @@
   ——即 render 时种下、callback 时比对的 cookie，攻击者无法向受害者浏览器种此
   cookie。
 
-  **绑定流程（M2b，已实现）同理**：`/oauth/bind/{provider}` 带 `@SaCheckLogin`，
-  userId 取自服务端已校验的会话；以随机 state 为 key 把它存进服务端内存
+  **绑定流程（M2b，已实现）同理**：`POST /oauth/bind/{provider}` 带 `@SaCheckLogin`，
+  返回 provider 授权地址（`{url}`）由前端跳转；**不接受 GET**——GET 能被跨站顶级导航触发，
+  配合被种进受害者浏览器的攻击者 satoken cookie（SameSite=Lax 照样随 GET 导航发送），
+  就能把受害者的第三方身份绑进攻击者账号。userId 取自服务端已校验的会话；以随机 state 为 key 把它存进服务端内存
   （`OAuthController#bindIntents`，5 分钟 TTL、一次性消费），回调时取回并**二次核对
   当前会话仍是同一个人**（中途登出/换号即拒绝）。state 在此仅作不可猜测的查找键，
   不承载任何可信信息——把 userId 写进 state 就等于把绑定劫持焊死进流程。
   意图丢失（过期/重放/进程重启）时回调**不得**落进登录分支——否则会按该第三方身份
   建号或登进别的账号。发起绑定时同时种 `ih_oauth_bind` 标记 cookie（发起登录时清掉），
   回调见标记而无意图即在换 token 前弹回 `/settings?bind_error=bind_session`。
+  标记寿命 30 分钟，**必须长于** 5 分钟的 state cookie：两者同时过期的话，在 provider 页
+  停太久的绑定回来什么都不剩，会被送去 `/login?error=oauth_state`，用户再点登录就分叉出新账号；
+  标记还在则回到 `/settings?bind_error=oauth_state`。
 - **历史**：2026-07-19 随多 provider 身份体系 M1 引入（RFC #42 / ADR-001）。
   编号说明：INV-006 已被"付费 LLM 端点限流"占用，按流水规则用 INV-007。
+  2026-10-18 #57 review：绑定发起由 cookie 鉴权的 GET 改为 POST（review 复现了"种 token +
+  顶级导航"把受害者 Discord 绑进攻击者账号的链路），标记寿命与 state cookie 脱钩。
 
 ## INV-008 · Discord 灰度闸只放行白名单与已有账号，且不得静默失效
 
@@ -168,8 +179,8 @@
 - **测试**：`OAuthControllerAllowlistTests`
   （解析畸形取值 / 未配即全开 / 配了却解析不出 id 时拒绝所有人 /
   空 uuid 拒绝 / 已有 identity 放行 / identity 查询失败不放行）
-- **为什么**：灰度要拦的是**建新号**——新用户的"验证邮箱→建号"（OTP wiring）尚未
-  完成，此时放任新用户从 Discord 进来会把已有 GitHub 用户分叉成第二个账号。
+- **为什么**：灰度要拦的是**建新号**——新用户的"验证邮箱→建号"（OTP wiring，INV-012）
+  上线之前，放任新用户从 Discord 进来会把已有 GitHub 用户分叉成第二个账号。
   两个方向都必须防住：
   1. **不得静默 fail-open**。闸由一个 env 驱动，缺失/拼错时值为空，行为与"故意 GA"
      完全一致。因此启动时必须播报当前模式（闸启用 N 个 id / 闸关闭全开放），
@@ -179,10 +190,15 @@
      "没人能登"（立刻可见、无损失），不能选"所有人能登"（正是灰度要防的事）。
   另外闸**不能**卡住已有账号的回访登录，否则会把用户锁在自己的账号外面，而提示
   只说"灰度中"，既不告知账号存在也无恢复路径。
-- **GA 流程**：OTP wiring 上线后清空 `AUTH_DISCORD_ALLOWLIST` 即全量开放；
-  在那之前清空它等于提前放开分叉风险。
+- **GA 流程**：OTP wiring 已上线（INV-012：新号一律先验证邮箱，验证出的邮箱已属于别的
+  账号即 409 不建号）。GA = `AUTH_DISCORD_ALLOWLIST` 不设或留空（`AUTH_DISCORD_ALLOWLIST=`），
+  启动日志应为"闸关闭，Discord 登录对所有人开放"。**不要**写成 `""`、`''` 或 `,`：配了值却
+  解析不出 id 是失败关闭（新 Discord 用户全被拒，已有身份不受影响），启动日志报 ERROR。
+  **GA 于 2026-10-18 执行。** 闸的代码保留一个版本、处于惰性状态，作为回滚开关：
+  要重新关上 Discord 注册，设 `AUTH_DISCORD_ALLOWLIST=<id>` 后重建容器即可（已有 Discord
+  身份照常登录）。稳定一个版本后，经 superadmin review 的 PR 退役本条（标 retired）并删掉闸。
 - **历史**：2026-07-24 随 Discord 灰度（#53 / involutionhell#389）引入，
-  2026-07-25 按 xhigh review（#54）补齐本不变量与测试。
+  2026-07-25 按 xhigh review（#54）补齐本不变量与测试。2026-10-18 OTP 注册接线、GA。
 
 ## INV-009 · docker-compose 的端口映射一律只绑 127.0.0.1
 
@@ -261,3 +277,69 @@
 - **历史**：2026-10-18 审计发现生产库这三个账号处于启用状态，只读核对确认哈希对得上公开密码。
   本不变量把 seed 移出 schema.sql，只保证以后的启动不再写入；生产里已有的三行要另外处理，
   删掉 seed 不会动它们。
+
+## INV-012 · 新账号只在邮箱 OTP 验证之后建；只有已验证的邮箱进 user_accounts.email
+
+- **保护点**：
+  - `usercenter/service/AuthService#loginByProvider`：**从不建号**。身份 → 用户名（仅无身份行的老账号）
+    → 已验证邮箱挂靠都没命中时返回 `NeedsRegistration`。`updateProfile` 只收 provider 已验证的邮箱
+    （`AuthProvider#isEmailVerified`），未验证的传 null；邮箱挂靠只用已验证邮箱，且不挂进已有同家身份的账号。
+  - `usercenter/service/AuthService#completeRegistration`：**唯一的建号入口**，只吃
+    `RegistrationService.VerifiedRegistration`。email 写本次 OTP 验证过的地址（不是 provider 预填）；
+    角色恰好 `{user}`、无额外权限；建号 + 挂身份 + 登入同一事务。验证出的邮箱已属于任何账号
+    （LOWER 匹配）→ `EmailTakenException` → 409，什么都不写、不合并。
+  - `usercenter/controller/OAuthController#handleLogin`：新用户 302 `/login/verify`，pendingId 只进
+    httpOnly、SameSite=Lax 的 `ih_reg_pending` cookie（Max-Age 900），**绝不进 URL**。
+  - `usercenter/controller/AuthController` `/auth/register/{pending,send-otp,verify}`：公开
+    （`SaTokenConfigure` notMatch `/auth/register/*`），cookie 是唯一凭据。
+  - `usercenter/service/RegistrationService`：会话内至多 5 封、间隔 ≥60s；每个收件邮箱每天 5 封、
+    每个第三方身份每天 10 封；累计 5 次错码即作废会话；OTP 10 分钟、会话 15 分钟。
+  - `src/main/resources/schema.sql`：`user_accounts` / `user_identities` 没有存 provider token 的列；
+    OAuth 换到的 token 只用来取一次资料，拒绝/失败时 `OAuthController#revokeQuietly` 撤销。
+- **测试**：
+  - `AuthServiceTests#newGithubUserStartsRegistrationInsteadOfCreatingAccount`
+  - `AuthServiceTests#unverifiedEmailDoesNotAutoLinkAndStartsRegistration`
+  - `AuthServiceTests#returningLoginNeverFillsAnUnverifiedEmail`
+  - `AuthServiceTests#verifiedEmailDoesNotAutoLinkIntoAccountThatAlreadyHasThisProvider`
+  - `AuthServiceTests#completeRegistrationCreatesAccountWithVerifiedEmailAndIdentity`（email 取 OTP 地址、角色恰好 user）
+  - `AuthServiceTests#completeRegistrationRefusesEmailOfExistingAccountWithoutLinking`
+  - `RegistrationFlowIntegrationTests#newUserIsSentToVerifyPageWithPendingIdOnlyInHttpOnlyCookie`
+  - `RegistrationFlowIntegrationTests#fullRegistrationCreatesAccountWithVerifiedEmailAndLogsIn`（端到端，含角色/权限）
+  - `RegistrationFlowIntegrationTests#verifiedEmailOfExistingAccountIsNotMergedAndCreatesNothing`
+  - `RegistrationFlowIntegrationTests#wrongCodeIs400UntilLockThen410`
+  - `RegistrationFlowIntegrationTests#endpointsArePublicButNeedTheCookie`
+  - `RegistrationServiceTests#fifthWrongCodeKillsTheSession_noResendAfterLock`
+  - `RegistrationServiceTests#sendsToOneEmailAreCappedAcrossSessions`
+  - `RegistrationServiceTests#sendsFromOneIdentityAreCappedAcrossSessions`
+  - `OAuthControllerIntegrationTests#unverifiedEmailPlantedViaBindNeverCapturesAVictimsFirstLogin`（攻击链端到端）
+  - `OAuthControllerIntegrationTests#verifiedEmailNeverAutoLinksIntoAccountThatAlreadyHasThatProvider`
+  - `SecurityInvariantsTests#账号表和身份表不存第三方token`
+- **为什么**：`user_accounts.email` 是已验证邮箱自动挂靠的锚点——谁的 provider 已验证邮箱命中它，
+  谁就登进这个账号。锚点里混进一个没人验证过的邮箱，就是给"谎称别人邮箱"的第三方号留了接管入口：
+  #57 review 复现过"攻击者绑一个报了受害者邮箱的 Discord → 登录把它写进自己的空 email →
+  受害者第一次用 GitHub 登录就落进攻击者账号"。所以：
+  1. 建号前必须由我们自己的 OTP 证明邮箱归属，且这一步只有一个入口，provider 登录路径上不留第二个建号分支。
+  2. pendingId 只在发起人浏览器的 httpOnly cookie 里：放进 URL 就能转发给受害者，让受害者在攻击者的
+     注册会话里验证自己的邮箱（预注册劫持）。不要放宽成 SameSite=None。
+  3. 验证出的邮箱属于已有账号时只报 409，不合并（ADR-001 红线"禁止静默合并"）；合并账号的唯一路径是
+     登录后显式绑定（INV-007）。409 出现在 OTP 通过之后，不能拿来探测哪些邮箱注册过。
+  4. 新号角色恰好 `user`：注册入口是公开的，任何角色/权限漂移都直接是越权。
+  5. provider token 不落库：落了，拖库就从"拿到一堆资料"升级成"拿着用户的授权去调对方 API"。
+- **历史**：2026-10-18 随 OTP 注册接线与 Discord GA 引入（#57 review 的未验证邮箱植入攻击链）。
+
+## INV-013 · 机器人桥接接口不能经代理访问
+
+- **保护点**：`community/controller/SharedLinkInternalController#checkKey`（`/api/community/links/internal`
+  的全部三个接口）：请求带 `X-Forwarded-For` 即 404，排在 key 校验与"未配置 503"之前。
+- **测试**：
+  - `SharedLinkInternalControllerIntegrationTests#submit_viaProxy_returns404`
+  - `SharedLinkInternalControllerIntegrationTests#readEndpoints_viaProxy_return404`（含不带头 200 的反向）
+- **为什么**：唯一合法调用方 ChatBot 走 127.0.0.1:8080 直连，不带 `X-Forwarded-For`。但
+  api.involutionhell.com 的 Caddy 兜底和前端 `/api/community/links/:path*` rewrite 都会把公网请求转到
+  这里，二者都会加 `X-Forwarded-For`。不挡的话唯一的门就是 `X-Internal-Key`：key 一旦泄漏（日志、
+  ChatBot 配置），谁都能以任意已绑定 Discord 的身份投稿、读审核队列。返回 404 而不是 403，
+  从公网看这组接口就不存在。
+  依赖的前提：Spring **没有**配 `server.forward-headers-strategy`。配成 `framework` 或 `native` 后，
+  `X-Forwarded-For` 会在到达 controller 前被消费掉，本检查静默失效——要开就得同时把这里改成按
+  真实对端地址（loopback）判断。
+- **历史**：2026-10-18 随 #57 后续加固引入。

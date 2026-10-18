@@ -105,6 +105,9 @@ class RegistrationFlowIntegrationTests extends AbstractWebIntegrationTest {
                 .andExpect(jsonPath("$.data.email").value("me@example.com"))
                 .andExpect(jsonPath("$.data.username").value(FAKE + "_new-2"));
         assertThat(accounts()).isEqualTo(before + 1);
+        assertThat(jdbc.queryForMap("SELECT roles, permissions FROM user_accounts WHERE username = ?", FAKE + "_new-2"))
+                .as("新账号只有 user 角色、没有任何额外权限（INV-012）")
+                .containsEntry("roles", "user").containsEntry("permissions", "");
 
         // 回访：身份已在，直接发 token，不再进验证页、不再建号
         assertThat(oauthLogin("new-2").getRedirectedUrl()).contains("/#token=");
