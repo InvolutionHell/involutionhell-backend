@@ -2,6 +2,7 @@ package com.involutionhell.backend.usercenter.controller;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
@@ -13,6 +14,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.involutionhell.backend.support.AbstractWebIntegrationTest;
 import com.involutionhell.backend.usercenter.oauth.AuthProvider;
 import com.involutionhell.backend.usercenter.service.AuthService;
+import com.involutionhell.backend.usercenter.service.UserIdentityService;
 import com.jayway.jsonpath.JsonPath;
 import jakarta.servlet.http.Cookie;
 import me.zhyd.oauth.enums.AuthResponseStatus;
@@ -26,6 +28,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.test.context.TestPropertySource;
@@ -552,6 +555,19 @@ class OAuthControllerIntegrationTests extends AbstractWebIntegrationTest {
         doThrow(new RuntimeException("db down")).when(authService).loginByProvider(eq(FAKE), any());
 
         assertThat(login(FAKE, "boom")).endsWith("/login?error=oauth_failed");
+    }
+
+    @MockitoSpyBean
+    private UserIdentityService userIdentityService;
+
+    @Test
+    void unexpectedBindFailureRedirectsToSettingsInsteadOfRaw500() throws Exception {
+        String alice = loginAsAlice();
+        doThrow(new DataAccessResourceFailureException("db down"))
+                .when(userIdentityService).bind(anyLong(), eq(FAKE), eq("bind-boom"), any(), any());
+
+        assertThat(callback("bind-boom", startBind(alice), alice)).endsWith("/settings?bind_error=oauth_failed");
+        assertThat(ownersOf("bind-boom")).isEmpty();
     }
 
     static final String FAKE = "fakeoauth";

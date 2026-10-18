@@ -396,6 +396,11 @@ public class OAuthController {
             revokeQuietly(p, authUser);
             response.sendRedirect(frontEndUrl + "/settings?bind_error=" + e.errorCode());
             return;
+        } catch (Exception e) {
+            // 同 handleLogin：顶级导航，不兜住就是一个裸 JSON 500 页，token 也不撤
+            log.error("[OAuth] bind provider={} 处理失败", p.key(), e);
+            revokeQuietly(p, authUser);
+            response.sendRedirect(frontEndUrl + "/settings?bind_error=oauth_failed");
         }
     }
 
