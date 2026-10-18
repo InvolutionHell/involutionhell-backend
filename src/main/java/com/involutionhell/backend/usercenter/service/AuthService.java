@@ -12,6 +12,7 @@ import com.involutionhell.backend.usercenter.repository.UserIdentityRepository;
 import me.zhyd.oauth.model.AuthUser;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 
 import java.util.Optional;
@@ -37,6 +38,13 @@ public class AuthService {
 
     /** 验证通过的邮箱已属于某个已有账号。不合并（ADR-001 红线），让用户登录那个账号后去绑定。 */
     public static class EmailTakenException extends RuntimeException {}
+
+    /** 第三方登录命中的账号已被禁用。回调据此给出 account_disabled，而不是笼统的 oauth_failed。 */
+    public static class AccountDisabledException extends IllegalStateException {
+        AccountDisabledException() {
+            super("账号已被禁用");
+        }
+    }
 
     /**
      * 创建认证服务并注入用户与密码服务。
@@ -98,7 +106,8 @@ public class AuthService {
      *
      * 查找顺序（identity-first，ADR-001 迁移表"登录主查翻转"）：
      *   1. user_identities 命中 (provider, providerUserId) → 登入该身份所属账号；
-     *   2. 未命中 → 按 "{provider}_{providerUserId}" 用户名查（兜住 M0 回填尚未覆盖的老账号）；
+     *   2. 未命中 → 按 "{provider}_{providerUserId}" 用户名查，**仅限一行身份都没有的账号**
+     *      （M0 回填前的老账号，见 legacyAccountByUsername）；
      *   3. 仍未命中 → 已验证邮箱自动关联 → 都不中则进 OTP 注册。
      * 必须身份优先：M2b 绑定后，身份所属账号的用户名不再是 "{provider}_{id}"，按用户名查
      * 会 miss → 走邮箱关联（邮箱不同即分叉）或建号（github 撞 UNIQUE(github_id) 直接 500）。
@@ -127,9 +136,11 @@ public class AuthService {
 
         // 身份查询失败直接抛：吞掉再回退到用户名/邮箱路径，一次 DB 抖动就可能分叉出新账号。
         Optional<UserAccount> found = userIdentityRepository.findByProviderAndProviderUserId(provider, providerUserId)
-                .map(UserIdentity::userId)
-                .or(() -> userCenterService.findByUsername(username).map(UserAccount::id))
-                .map(userId -> userCenterService.updateProfile(userId, displayName, avatarUrl, verifiedEmail, gid))
+                .flatMap(identity -> userAccountRepository.findById(identity.userId()))
+                .or(() -> legacyAccountByUsername(username))
+                // 用这家 provider 建的号（用户名前缀）跟着它刷新展示名/头像；别家登录只补空
+                .map(account -> userCenterService.updateProfile(account.id(), displayName, avatarUrl,
+                        verifiedEmail, gid, account.username().startsWith(provider + "_")))
                 .or(() -> autoLinkByVerifiedEmail(provider, verifiedEmail, gid));
 
         if (found.isEmpty()) {
@@ -139,7 +150,7 @@ public class AuthService {
         }
         UserAccount userAccount = found.get();
         if (!userAccount.enabled()) {
-            throw new IllegalStateException("账号已被禁用");
+            throw new AccountDisabledException();
         }
 
         ensureIdentity(userAccount.id(), provider, providerUserId, email, displayName);
@@ -160,9 +171,15 @@ public class AuthService {
             throw new EmailTakenException();
         }
         PendingRegistration p = verified.pending();
+        String username = p.provider() + "_" + p.providerUserId();
+        if (userCenterService.findByUsername(username).isPresent()) {
+            // 被一个已经解绑/换绑掉这个身份的老账号占着（它不再是这个身份的家，见 legacyAccountByUsername）。
+            // ponytail: 6 位随机后缀；再撞由 UNIQUE(username) 兜底成 410，重新登录即可。
+            username += "_" + UUID.randomUUID().toString().substring(0, 6);
+        }
         UserAccount created = userCenterService.createUser(new UserAccount(
                 null,
-                p.provider() + "_" + p.providerUserId(),
+                username,
                 // 第三方用户不用密码登录，塞随机超长密码占位（password_hash NOT NULL）
                 passwordService.hash(UUID.randomUUID().toString()),
                 p.displayName(),
@@ -177,6 +194,16 @@ public class AuthService {
         userIdentityRepository.insert(new UserIdentity(
                 null, created.id(), p.provider(), p.providerUserId(), p.providerEmail(), p.displayName(), null, null));
         return executeLogin(created);
+    }
+
+    /**
+     * 按 "{provider}_{id}" 用户名找账号，只认**一行身份都没有**的账号——M0 回填之前的老账号。
+     * 有身份行的账号按用户名命中，只可能是这个身份已经被解绑或换绑：登进去等于解绑失效，
+     * 换绑后的旧 GitHub 还能登录且设置页看不到、撤不掉。那种情况走注册（用户名另取）。
+     */
+    private Optional<UserAccount> legacyAccountByUsername(String username) {
+        return userCenterService.findByUsername(username)
+                .filter(account -> userIdentityRepository.findByUserId(account.id()).isEmpty());
     }
 
     /**
@@ -201,6 +228,12 @@ public class AuthService {
             return Optional.empty();
         }
         UserAccount target = matches.get(0);
+        // 目标账号已有这家的身份：新身份挂不上去（UNIQUE(user_id, provider)），而"同家第二个号
+        // 报了同一个邮箱"也不是同一个人的证据（邮箱回收转手、或锚点本身来路不正）。不挂靠。
+        if (userIdentityRepository.findByUserId(target.id()).stream().anyMatch(i -> provider.equals(i.provider()))) {
+            log.warn("verified-email 命中的账号 id={} 已有 {} 身份，不自动关联", target.id(), provider);
+            return Optional.empty();
+        }
         log.info("verified-email 自动关联：provider={} 的已验证邮箱匹配到已有账号 id={}，挂靠不建新号",
                 provider, target.id());
         // 反向场景（先 Discord 注册、后 GitHub 登录挂靠）：目标账号 github_id 可能为空。
@@ -248,6 +281,8 @@ public class AuthService {
      * 只更新时间戳的话设置页永远显示不出账号名。
      * 写失败不阻断登录——与 INV-003 lazy upgrade 同策略，记日志后继续，
      * 下次登录还会再试，绝不让 identity 写入把用户挡在门外。
+     * 例外是撞唯一约束：身份注定挂不上这个账号（该账号已有同家身份 / 身份刚被别人占走），
+     * 放行就是"身份不在账号上却能登进去"，解绑撤不掉。拒绝这次登录。
      */
     private void ensureIdentity(long userId, String provider, String providerUserId,
                                 String email, String displayName) {
@@ -258,6 +293,8 @@ public class AuthService {
                             existing -> userIdentityRepository.recordLogin(existing.id(), email, displayName),
                             () -> userIdentityRepository.insert(new UserIdentity(
                                     null, userId, provider, providerUserId, email, displayName, null, null)));
+        } catch (DataIntegrityViolationException e) {
+            throw new IllegalStateException("该登录方式无法关联到这个账号", e);
         } catch (Exception e) {
             log.warn("user_identities 双写失败（provider={} userId={}），不阻断登录", provider, userId, e);
         }

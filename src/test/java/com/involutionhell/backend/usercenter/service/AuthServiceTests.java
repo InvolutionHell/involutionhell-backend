@@ -305,19 +305,18 @@ class AuthServiceTests {
     }
 
     @Test
-    void loginByGithubFillsBlankProfileWhenUserAlreadyExists() {
+    void originProviderLoginRefreshesNameAndAvatar() {
         AuthUser ghUser = githubUser("12345", "UpdatedNick", "https://new-avatar.url", "new@github.com");
 
         UserAccount existing = enabledUser(10L, "github_12345", "hash");
-        // updateProfile 只补空列（SQL 见 JdbcUserAccountRepositoryTests）：已有展示名保留，
-        // 原本为空的头像/邮箱/github_id 被补上。
+        // 账号是 github 建的（用户名前缀）→ github 登录刷新展示名/头像（SQL 见 JdbcUserAccountRepositoryTests）
         UserAccount afterUpdate = new UserAccount(
-                10L, "github_12345", "hash", "显示名称", true,
+                10L, "github_12345", "hash", "UpdatedNick", true,
                 Set.of("user"), Set.of("user:profile:read"),
                 "https://new-avatar.url", "new@github.com", 12345L, null
         );
         when(userCenterService.findByUsername("github_12345")).thenReturn(Optional.of(existing));
-        when(userCenterService.updateProfile(10L, "UpdatedNick", "https://new-avatar.url", "new@github.com", 12345L))
+        when(userCenterService.updateProfile(10L, "UpdatedNick", "https://new-avatar.url", "new@github.com", 12345L, true))
                 .thenReturn(afterUpdate);
 
         try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
@@ -327,8 +326,8 @@ class AuthServiceTests {
             LoginResponse response = loginAs("github", ghUser);
 
             // 已有用户应走 updateProfile 而非 createUser
-            verify(userCenterService).updateProfile(10L, "UpdatedNick", "https://new-avatar.url", "new@github.com", 12345L);
-            assertThat(response.user().displayName()).isEqualTo("显示名称");
+            verify(userCenterService).updateProfile(10L, "UpdatedNick", "https://new-avatar.url", "new@github.com", 12345L, true);
+            assertThat(response.user().displayName()).isEqualTo("UpdatedNick");
             assertThat(response.user().githubId()).isEqualTo(12345L);
         }
     }
@@ -340,18 +339,19 @@ class AuthServiceTests {
         UserAccount disabledAccount = disabledUser(10L, "github_12345");
         when(userCenterService.findByUsername("github_12345")).thenReturn(Optional.of(disabledAccount));
         // updateProfile 仍会被调用（刷新资料），但返回的账号仍是禁用状态
-        when(userCenterService.updateProfile(any(), any(), any(), any(), any()))
+        when(userCenterService.updateProfile(any(), any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyBoolean()))
                 .thenReturn(disabledAccount);
 
         assertThatThrownBy(() -> loginAs("github", ghUser))
-                .isInstanceOf(IllegalStateException.class)
+                .isInstanceOf(AuthService.AccountDisabledException.class)
                 .hasMessage("账号已被禁用");
     }
 
     @Test
     void existingIdentityRefreshesLastLoginInsteadOfInserting() {
         AuthUser ghUser = githubUser("12345", "Nick", null, null);
-        when(userCenterService.updateProfile(any(), any(), any(), any(), any()))
+        when(userAccountRepository.findById(10L)).thenReturn(Optional.of(enabledUser(10L, "github_12345", "hash")));
+        when(userCenterService.updateProfile(any(), any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyBoolean()))
                 .thenReturn(enabledUser(10L, "github_12345", "hash"));
         // 该 provider 身份已存在 → 不应再 insert，只刷新 last_login_at
         when(userIdentityRepository.findByProviderAndProviderUserId("github", "12345"))
@@ -374,7 +374,7 @@ class AuthServiceTests {
         AuthUser ghUser = githubUser("12345", "Nick", null, null);
         // 老账号（M0 回填没覆盖到）：按用户名找到，补身份行时 DB 炸掉——不能阻断登录
         when(userCenterService.findByUsername("github_12345")).thenReturn(Optional.of(enabledUser(10L, "github_12345", "hash")));
-        when(userCenterService.updateProfile(any(), any(), any(), any(), any())).thenReturn(enabledUser(10L, "github_12345", "hash"));
+        when(userCenterService.updateProfile(any(), any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyBoolean())).thenReturn(enabledUser(10L, "github_12345", "hash"));
         org.mockito.Mockito.doThrow(new RuntimeException("simulated identity write failure"))
                 .when(userIdentityRepository).insert(any());
 
@@ -448,12 +448,14 @@ class AuthServiceTests {
         when(userIdentityRepository.findByProviderAndProviderUserId("discord", "snow-5"))
                 .thenReturn(Optional.of(new com.involutionhell.backend.usercenter.model.UserIdentity(
                         9L, 10L, "discord", "snow-5", null, null, null, null)));
-        when(userCenterService.updateProfile(any(), any(), any(), any(), any())).thenReturn(enabledUser(10L, "u", "h"));
+        when(userAccountRepository.findById(10L)).thenReturn(Optional.of(enabledUser(10L, "u", "h")));
+        when(userCenterService.updateProfile(any(), any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyBoolean())).thenReturn(enabledUser(10L, "u", "h"));
 
         try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
             loginAs("discord", dc);
         }
-        verify(userCenterService).updateProfile(eq(10L), any(), any(), org.mockito.ArgumentMatchers.isNull(), any());
+        verify(userCenterService).updateProfile(eq(10L), any(), any(), org.mockito.ArgumentMatchers.isNull(), any(),
+                org.mockito.ArgumentMatchers.anyBoolean());
     }
 
     @Test
@@ -535,7 +537,9 @@ class AuthServiceTests {
         AuthUser dc = discordUser("snow-b", "other@example.com", true);
         when(userIdentityRepository.findByProviderAndProviderUserId("discord", "snow-b"))
                 .thenReturn(Optional.of(identity(10L, "discord", "snow-b")));
-        when(userCenterService.updateProfile(eq(10L), any(), any(), eq("other@example.com"), org.mockito.ArgumentMatchers.isNull()))
+        when(userAccountRepository.findById(10L)).thenReturn(Optional.of(enabledUser(10L, "github_12345", "hash")));
+        // 跨 provider 登录（github 建的号、discord 登录）：展示名/头像只补空，不刷新
+        when(userCenterService.updateProfile(eq(10L), any(), any(), eq("other@example.com"), org.mockito.ArgumentMatchers.isNull(), eq(false)))
                 .thenReturn(enabledUser(10L, "github_12345", "hash"));
 
         try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
@@ -557,14 +561,15 @@ class AuthServiceTests {
         String snowflake = "123456789012345678";
         when(userIdentityRepository.findByProviderAndProviderUserId("discord", snowflake))
                 .thenReturn(Optional.of(identity(10L, "discord", snowflake)));
-        when(userCenterService.updateProfile(eq(10L), any(), any(), any(), any()))
+        when(userAccountRepository.findById(10L)).thenReturn(Optional.of(enabledUser(10L, "github_12345", "hash")));
+        when(userCenterService.updateProfile(eq(10L), any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyBoolean()))
                 .thenReturn(enabledUser(10L, "github_12345", "hash"));
 
         try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
             loginAs("discord", discordUser(snowflake, null, false));
         }
         verify(userCenterService).updateProfile(eq(10L), any(), any(), any(),
-                org.mockito.ArgumentMatchers.isNull());
+                org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.anyBoolean());
     }
 
     @Test
@@ -574,7 +579,9 @@ class AuthServiceTests {
         AuthUser gh = githubUser("555", "Nick", null, null);
         when(userIdentityRepository.findByProviderAndProviderUserId("github", "555"))
                 .thenReturn(Optional.of(identity(50L, "github", "555")));
-        when(userCenterService.updateProfile(50L, "Nick", null, null, 555L))
+        when(userAccountRepository.findById(50L)).thenReturn(Optional.of(new UserAccount(50L, "discord_snow-x", "hash",
+                "显示名", true, Set.of("user"), Set.of(), null, null, 555L, null)));
+        when(userCenterService.updateProfile(50L, "Nick", null, null, 555L, false))
                 .thenReturn(new UserAccount(50L, "discord_snow-x", "hash", "显示名", true,
                         Set.of("user"), Set.of(), null, null, 555L, null));
         org.mockito.Mockito.lenient().when(userCenterService.createUser(any()))
@@ -607,7 +614,8 @@ class AuthServiceTests {
 
         UserAccount original = enabledUser(10L, "github_12345", "hash");
         when(userAccountRepository.findByEmail("alice@example.com")).thenReturn(java.util.List.of(original));
-        when(userCenterService.updateProfile(eq(10L), any(), any(), eq("alice-new@example.com"), org.mockito.ArgumentMatchers.isNull()))
+        when(userAccountRepository.findById(10L)).thenReturn(Optional.of(original));
+        when(userCenterService.updateProfile(eq(10L), any(), any(), eq("alice-new@example.com"), org.mockito.ArgumentMatchers.isNull(), eq(false)))
                 .thenReturn(original);
 
         try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
@@ -621,6 +629,72 @@ class AuthServiceTests {
         }
         verify(userCenterService, org.mockito.Mockito.never()).createUser(any());
         verify(userIdentityRepository).insert(any()); // 只在第一次挂靠时插一行
+    }
+
+    // =============================================
+    // 解绑/换绑不复活、自动挂靠不越过同家身份、撞约束拒登
+    // =============================================
+
+    @Test
+    void usernameFallbackSkipsAccountsThatAlreadyHaveIdentities() {
+        // github_12345 解绑了 github（或换绑成别的 GitHub），只剩 discord：旧 GitHub 再登录不能回到这个号
+        AuthUser gh = githubUser("12345", "Nick", null, null);
+        when(userCenterService.findByUsername("github_12345")).thenReturn(Optional.of(enabledUser(10L, "github_12345", "h")));
+        when(userIdentityRepository.findByUserId(10L)).thenReturn(java.util.List.of(identity(10L, "discord", "d-1")));
+
+        expectRegistration("github", gh);
+        verify(userCenterService, org.mockito.Mockito.never()).updateProfile(any(), any(), any(), any(), any(),
+                org.mockito.ArgumentMatchers.anyBoolean());
+    }
+
+    @Test
+    void verifiedEmailDoesNotAutoLinkIntoAccountThatAlreadyHasThisProvider() {
+        // 同一个邮箱出现在第二个 GitHub 号上：目标账号已有 github 身份，新身份挂不上去，不挂靠
+        AuthUser gh = githubUser("555", "Nick", null, "alice@example.com");
+        when(userCenterService.findByUsername("github_555")).thenReturn(Optional.empty());
+        when(userAccountRepository.findByEmail("alice@example.com"))
+                .thenReturn(java.util.List.of(enabledUser(10L, "discord_d-1", "h")));
+        when(userIdentityRepository.findByUserId(10L)).thenReturn(java.util.List.of(identity(10L, "github", "444")));
+
+        expectRegistration("github", gh);
+        verify(userAccountRepository, org.mockito.Mockito.never()).setGithubIdIfAbsent(any(), any());
+    }
+
+    @Test
+    void identityConflictOnLoginRefusesInsteadOfLoggingIn() {
+        // 身份挂不上（撞 UNIQUE）却照样登入 = 身份不在账号上也能登录，解绑撤不掉
+        AuthUser gh = githubUser("12345", "Nick", null, null);
+        when(userCenterService.findByUsername("github_12345")).thenReturn(Optional.of(enabledUser(10L, "github_12345", "h")));
+        when(userCenterService.updateProfile(any(), any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyBoolean()))
+                .thenReturn(enabledUser(10L, "github_12345", "h"));
+        when(userIdentityRepository.insert(any()))
+                .thenThrow(new org.springframework.dao.DuplicateKeyException("UNIQUE(user_id, provider)"));
+
+        try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
+            assertThatThrownBy(() -> authService.loginByProvider("github", gh)).isInstanceOf(IllegalStateException.class);
+            stpUtil.verifyNoInteractions();
+        }
+    }
+
+    @Test
+    void completeRegistrationSuffixesUsernameHeldByAnotherAccount() {
+        // github_12345 还被一个已经解绑掉这个 GitHub 的老账号占着
+        when(userCenterService.findByUsername("github_12345")).thenReturn(Optional.of(enabledUser(10L, "github_12345", "h")));
+        when(passwordService.hash(any())).thenReturn("hash");
+        when(userCenterService.createUser(any())).thenAnswer(inv -> {
+            UserAccount a = inv.getArgument(0);
+            return new UserAccount(61L, a.username(), a.passwordHash(), a.displayName(), true,
+                    a.roles(), a.permissions(), a.avatarUrl(), a.email(), a.githubId(), null);
+        });
+        var pending = new com.involutionhell.backend.usercenter.model.PendingRegistration(
+                "github", "12345", "Nick", null, null, 12345L);
+
+        try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
+            authService.completeRegistration(new RegistrationService.VerifiedRegistration(pending, "me@example.com"));
+        }
+        var cap = org.mockito.ArgumentCaptor.forClass(UserAccount.class);
+        verify(userCenterService).createUser(cap.capture());
+        assertThat(cap.getValue().username()).startsWith("github_12345_").hasSize("github_12345_".length() + 6);
     }
 
     // =============================================

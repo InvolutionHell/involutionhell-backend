@@ -71,10 +71,11 @@ public class UserCenterService {
     }
 
     /**
-     * 第三方登录时补齐资料（展示名、头像、邮箱、GitHub ID），只填空列、不覆盖，见 repository。
+     * 第三方登录时补齐资料（展示名、头像、邮箱、GitHub ID），覆盖规则见 repository。
      */
-    public UserAccount updateProfile(Long userId, String displayName, String avatarUrl, String email, Long githubId) {
-        return userAccountRepository.updateProfile(userId, displayName, avatarUrl, email, githubId);
+    public UserAccount updateProfile(Long userId, String displayName, String avatarUrl, String email, Long githubId,
+                                     boolean refreshNameAndAvatar) {
+        return userAccountRepository.updateProfile(userId, displayName, avatarUrl, email, githubId, refreshNameAndAvatar);
     }
 
     /**

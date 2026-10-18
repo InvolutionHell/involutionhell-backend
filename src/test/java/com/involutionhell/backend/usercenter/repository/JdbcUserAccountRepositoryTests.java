@@ -183,7 +183,7 @@ class JdbcUserAccountRepositoryTests {
     void updateProfileFillsBlankColumnsButKeepsExistingDisplayName() {
         // 种子 alice：display_name='Alice'，头像/邮箱/github_id 都为空
         UserAccount updated = repository.updateProfile(
-                2L, "Alice Updated", "https://new-avatar.com", "alice@github.com", 12345L
+                2L, "Alice Updated", "https://new-avatar.com", "alice@github.com", 12345L, false
         );
 
         assertThat(updated.username()).isEqualTo("alice");
@@ -195,11 +195,11 @@ class JdbcUserAccountRepositoryTests {
 
     @Test
     void updateProfileNeverOverwritesOrNullsExistingValues() {
-        repository.updateProfile(2L, null, "https://a.png", "alice@github.com", 12345L);
+        repository.updateProfile(2L, null, "https://a.png", "alice@github.com", 12345L, false);
 
         // 换个 provider 登录：null 不能抹掉 email/github_id，新值也不能覆盖旧值
-        UserAccount afterNulls = repository.updateProfile(2L, null, null, null, null);
-        UserAccount afterOthers = repository.updateProfile(2L, "Other", "https://b.png", "other@x.com", 999L);
+        UserAccount afterNulls = repository.updateProfile(2L, null, null, null, null, false);
+        UserAccount afterOthers = repository.updateProfile(2L, "Other", "https://b.png", "other@x.com", 999L, false);
 
         for (UserAccount u : List.of(afterNulls, afterOthers)) {
             assertThat(u.displayName()).isEqualTo("Alice");
@@ -210,10 +210,26 @@ class JdbcUserAccountRepositoryTests {
     }
 
     @Test
+    void originProviderRefreshesNameAndAvatarButEmailAndGithubIdStayFillBlank() {
+        repository.updateProfile(2L, null, "https://a.png", "alice@github.com", 12345L, false);
+
+        UserAccount refreshed = repository.updateProfile(2L, "Alice Renamed", "https://b.png", "other@x.com", 999L, true);
+        assertThat(refreshed.displayName()).isEqualTo("Alice Renamed");
+        assertThat(refreshed.avatarUrl()).isEqualTo("https://b.png");
+        assertThat(refreshed.email()).as("邮箱是挂靠锚点，原始 provider 登录也不覆盖").isEqualTo("alice@github.com");
+        assertThat(refreshed.githubId()).isEqualTo(12345L);
+
+        // 新值为 null / 空串时不抹掉
+        UserAccount afterBlank = repository.updateProfile(2L, "", null, null, null, true);
+        assertThat(afterBlank.displayName()).isEqualTo("Alice Renamed");
+        assertThat(afterBlank.avatarUrl()).isEqualTo("https://b.png");
+    }
+
+    @Test
     void updateProfileTreatsEmptyStringAsBlank() {
         jdbc.update("UPDATE user_accounts SET display_name = '', email = '' WHERE id = 2");
 
-        UserAccount updated = repository.updateProfile(2L, "Alice", null, "alice@github.com", null);
+        UserAccount updated = repository.updateProfile(2L, "Alice", null, "alice@github.com", null, false);
 
         assertThat(updated.displayName()).isEqualTo("Alice");
         assertThat(updated.email()).isEqualTo("alice@github.com");
@@ -222,7 +238,7 @@ class JdbcUserAccountRepositoryTests {
     @Test
     void updateProfileHandlesNullEmailAndGithubId() {
         // 邮箱私密、uuid 无法解析 → 允许 null
-        UserAccount updated = repository.updateProfile(2L, "Alice", null, null, null);
+        UserAccount updated = repository.updateProfile(2L, "Alice", null, null, null, false);
 
         assertThat(updated.username()).isEqualTo("alice");
         assertThat(updated.displayName()).isEqualTo("Alice");
@@ -233,7 +249,7 @@ class JdbcUserAccountRepositoryTests {
 
     @Test
     void updateProfileThrowsWhenUserMissing() {
-        assertThatThrownBy(() -> repository.updateProfile(999L, "Name", null, null, null))
+        assertThatThrownBy(() -> repository.updateProfile(999L, "Name", null, null, null, false))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("用户不存在: 999");
     }

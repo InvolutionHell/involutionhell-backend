@@ -50,10 +50,12 @@ public interface UserAccountRepository {
     UserAccount insert(UserAccount userAccount);
 
     /**
-     * 第三方登录时补齐资料（展示名、头像、邮箱、GitHub ID）：**只填仍为空的列，不覆盖已有值**，
-     * 传 null 即保持原值。调用方只能在 github 登录时传非空 githubId。
+     * 第三方登录时补齐资料（展示名、头像、邮箱、GitHub ID）：邮箱与 GitHub ID **只填仍为空的列，
+     * 不覆盖已有值**；展示名/头像在 refreshNameAndAvatar 时用非空新值覆盖，否则同样只补空。
+     * 传 null 即保持原值。调用方只能在 github 登录时传非空 githubId，只能传已验证的邮箱。
      */
-    UserAccount updateProfile(Long userId, String displayName, String avatarUrl, String email, Long githubId);
+    UserAccount updateProfile(Long userId, String displayName, String avatarUrl, String email, Long githubId,
+                              boolean refreshNameAndAvatar);
 
     /**
      * 就地更新指定用户的 password_hash。

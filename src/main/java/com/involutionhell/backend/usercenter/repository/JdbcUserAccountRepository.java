@@ -137,14 +137,17 @@ public class JdbcUserAccountRepository implements UserAccountRepository {
     }
 
     @Override
-    public UserAccount updateProfile(Long userId, String displayName, String avatarUrl, String email, Long githubId) {
-        // 只补空列，不覆盖：一个账号挂多个身份后，换个 provider 登录不能把资料改成那家的，
-        // 更不能用 null 抹掉 email / github_id（贡献归属与 /u/{githubId} 依赖后者）。
+    public UserAccount updateProfile(Long userId, String displayName, String avatarUrl, String email, Long githubId,
+                                     boolean refreshNameAndAvatar) {
+        // email / github_id 只补空列，永不覆盖、永不被 null 抹掉：email 是自动挂靠的锚点，
+        // github_id 撑着贡献归属与 /u/{githubId}。
+        // 展示名/头像：账号的原始 provider 登录时用新值刷新（null/空串不抹），否则一改名就永远冻住；
+        // 别家 provider 登录只补空——不然换个 provider 登录就把资料改成那家的。
         // NULLIF(col, '')：历史上写进去的空串也算"空"，下次登录照样补。
-        jdbc.update("""
-                UPDATE user_accounts SET
-                    display_name = COALESCE(NULLIF(display_name, ''), ?),
-                    avatar_url   = COALESCE(NULLIF(avatar_url, ''), ?),
+        String nameAndAvatar = refreshNameAndAvatar
+                ? "display_name = COALESCE(NULLIF(?, ''), display_name), avatar_url = COALESCE(NULLIF(?, ''), avatar_url),"
+                : "display_name = COALESCE(NULLIF(display_name, ''), ?), avatar_url = COALESCE(NULLIF(avatar_url, ''), ?),";
+        jdbc.update("UPDATE user_accounts SET " + nameAndAvatar + """
                     email        = COALESCE(NULLIF(email, ''), ?),
                     github_id    = COALESCE(github_id, ?)
                 WHERE id = ?""",

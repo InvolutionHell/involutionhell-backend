@@ -4,6 +4,7 @@ import cn.dev33.satoken.annotation.SaCheckLogin;
 import cn.dev33.satoken.stp.StpUtil;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
+import com.involutionhell.backend.common.api.ApiResponse;
 import com.involutionhell.backend.usercenter.dto.LoginResponse;
 import com.involutionhell.backend.usercenter.oauth.AuthProvider;
 import com.involutionhell.backend.usercenter.oauth.AuthProviderRegistry;
@@ -13,6 +14,7 @@ import com.involutionhell.backend.usercenter.service.UserIdentityService;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.time.Duration;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import me.zhyd.oauth.model.AuthCallback;
@@ -22,8 +24,10 @@ import me.zhyd.oauth.request.AuthRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -31,8 +35,8 @@ import org.springframework.web.bind.annotation.RestController;
  * 第三方 OAuth 的两条流程，共用同一个回调端点：
  *   1. **登录**：/oauth/render/{provider} → 授权 → 回调 → 登入已有账号发 token；
  *      新用户不建号，带 ih_reg_pending cookie 去 /login/verify 验证邮箱（AuthController /auth/register/*）
- *   2. **绑定（M2b）**：/oauth/bind/{provider}（需已登录）→ 授权 → 回调 → 把该身份挂到
- *      **当前账号**，不建号、不换会话
+ *   2. **绑定（M2b）**：POST /oauth/bind/{provider}（需已登录，返回授权地址）→ 授权 → 回调 →
+ *      把该身份挂到**当前账号**，不建号、不换会话
  *
  * provider 全部经 {@link AuthProviderRegistry} 查找，本类不含任何 provider 名的 switch；
  * 接入新 provider 见 usercenter/README.md。
@@ -150,33 +154,42 @@ public class OAuthController {
     // 丢了意图的绑定当成登录处理，按该第三方身份建号或登进别的账号。
     static final String BIND_COOKIE = "ih_oauth_bind";
     private static final int STATE_COOKIE_MAX_AGE_SECONDS = 300;
+    // 标记必须比 state cookie 活得久：两者同时过期的话，在 provider 页停留超过 5 分钟的绑定
+    // 回来时什么都不剩，会被当成登录失败送去 /login（登录页再点 Discord 就是分叉出新账号）。
+    static final int BIND_COOKIE_MAX_AGE_SECONDS = 1800;
     // 待注册会话（OTP）的 pendingId。AuthController 的 /auth/register/* 读它。
     public static final String REG_COOKIE = "ih_reg_pending";
 
     /** 发起登录：跳 provider 授权页。 */
     @GetMapping("/oauth/render/{provider}")
     public void renderAuth(@PathVariable String provider, HttpServletResponse response) throws IOException {
-        startOAuth(provider, null, response, "/login?error=oauth_provider");
+        response.sendRedirect(startOAuth(provider, null, response)
+                .orElse(frontEndUrl + "/login?error=oauth_provider"));
     }
 
     /**
-     * 发起绑定（M2b）：把 {provider} 挂到**当前登录账号**。
+     * 发起绑定（M2b）：把 {provider} 挂到**当前登录账号**，返回授权地址由前端跳转。
      * @SaCheckLogin 保证 userId 来自服务端校验过的会话，而不是任何客户端可控输入。
+     * 必须是 POST：GET 能被跨站顶级导航触发，配合浏览器里被种下的别人的 satoken cookie
+     * （SameSite=Lax 照样随 GET 导航发送），就能把受害者的第三方身份绑进攻击者账号。
      */
     @SaCheckLogin
-    @GetMapping("/oauth/bind/{provider}")
-    public void renderBind(@PathVariable String provider, HttpServletResponse response) throws IOException {
-        startOAuth(provider, StpUtil.getLoginIdAsLong(), response, "/settings?bind_error=oauth_provider");
+    @PostMapping("/oauth/bind/{provider}")
+    public ResponseEntity<ApiResponse<?>> startBind(@PathVariable String provider, HttpServletResponse response) {
+        return startOAuth(provider, StpUtil.getLoginIdAsLong(), response)
+                .<ResponseEntity<ApiResponse<?>>>map(url -> ResponseEntity.ok(ApiResponse.ok(Map.of("url", url))))
+                .orElseGet(() -> ResponseEntity.badRequest().body(ApiResponse.fail("不支持的登录方式")));
     }
 
-    /** 登录与绑定共用的发起逻辑；bindUserId 非空即为绑定流程。 */
-    private void startOAuth(String provider, Long bindUserId, HttpServletResponse response, String errorPath)
-            throws IOException {
+    /**
+     * 登录与绑定共用的发起逻辑；bindUserId 非空即为绑定流程。
+     * 返回 provider 授权地址并种好 cookie；provider 未知/未配置时返回 empty，什么都不种。
+     */
+    private Optional<String> startOAuth(String provider, Long bindUserId, HttpServletResponse response) {
         Optional<AuthProvider> found = providers.find(provider);
         if (found.isEmpty()) {
             log.warn("[OAuth] 未知 provider={}", provider);
-            response.sendRedirect(frontEndUrl + errorPath);
-            return;
+            return Optional.empty();
         }
         AuthProvider p = found.get();
         AuthRequest authRequest;
@@ -184,8 +197,7 @@ public class OAuthController {
             authRequest = p.newRequest();
         } catch (IllegalArgumentException e) {
             log.warn("[OAuth] provider={} 未配置: {}", provider, e.getMessage());
-            response.sendRedirect(frontEndUrl + errorPath);
-            return;
+            return Optional.empty();
         }
         String state = me.zhyd.oauth.utils.AuthStateUtils.createState();
         if (bindUserId != null) {
@@ -196,11 +208,11 @@ public class OAuthController {
         // state 同时种进 httpOnly cookie。SameSite=Lax 是关键：callback 是 provider 发起的
         // 跨站顶级导航，Strict 会剥掉 cookie；Lax 恰好在顶级 GET 导航时携带。
         response.addHeader("Set-Cookie", buildCookie(STATE_COOKIE, state, STATE_COOKIE_MAX_AGE_SECONDS));
-        // 登录发起时清掉可能残留的绑定标记，否则放弃绑定后 5 分钟内的登录会被误判成绑定
+        // 登录发起时清掉可能残留的绑定标记，否则放弃绑定后的登录会被误判成绑定
         response.addHeader("Set-Cookie", bindUserId != null
-                ? buildCookie(BIND_COOKIE, "1", STATE_COOKIE_MAX_AGE_SECONDS)
+                ? buildCookie(BIND_COOKIE, "1", BIND_COOKIE_MAX_AGE_SECONDS)
                 : buildCookie(BIND_COOKIE, "", 0));
-        response.sendRedirect(authRequest.authorize(state));
+        return Optional.of(authRequest.authorize(state));
     }
 
     private String buildCookie(String name, String value, int maxAgeSeconds) {
@@ -299,7 +311,7 @@ public class OAuthController {
         }
     }
 
-    /** 登录：灰度闸 → 建号/挂靠 → 发 token。 */
+    /** 登录：灰度闸 → 登入已有账号发 token / 新用户去验证邮箱。 */
     private void handleLogin(AuthProvider p, AuthUser authUser, HttpServletResponse response) throws IOException {
         // Discord 灰度：不放行的 id 在此弹回（换 token 已发生，但不建号/不登入）。
         // 直连 /oauth/render/discord 绕过前端按钮的人也一并挡在这里。
@@ -309,7 +321,22 @@ public class OAuthController {
             response.sendRedirect(frontEndUrl + "/login?error=discord_canary");
             return;
         }
-        switch (authService.loginByProvider(p.key(), authUser)) {
+        AuthService.ProviderLogin result;
+        try {
+            result = authService.loginByProvider(p.key(), authUser);
+        } catch (AuthService.AccountDisabledException e) {
+            log.info("[OAuth] {} uuid={} 命中的账号已禁用，拒绝登录", p.key(), authUser.getUuid());
+            revokeQuietly(p, authUser);
+            response.sendRedirect(frontEndUrl + "/login?error=account_disabled");
+            return;
+        } catch (Exception e) {
+            // 不兜住就是一个裸 500 白页（这是顶级导航，不是 fetch）
+            log.error("[OAuth] {} 登录处理失败", p.key(), e);
+            revokeQuietly(p, authUser);
+            response.sendRedirect(frontEndUrl + "/login?error=oauth_failed");
+            return;
+        }
+        switch (result) {
             // token 放 URL fragment（#token=），不进服务器日志/Referer；前端读入 localStorage
             case AuthService.LoggedIn(LoginResponse r) -> response.sendRedirect(frontEndUrl + "/#token=" + r.tokenValue());
             case AuthService.NeedsRegistration(String pendingId) -> {
