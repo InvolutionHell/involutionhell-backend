@@ -327,6 +327,7 @@
   - `RegistrationFlowIntegrationTests#newUserIsSentToVerifyPageWithPendingIdOnlyInHttpOnlyCookie`
   - `RegistrationFlowIntegrationTests#fullRegistrationCreatesAccountWithVerifiedEmailAndLogsIn`（端到端，含角色/权限）
   - `RegistrationFlowIntegrationTests#verifiedEmailOfExistingAccountIsNotMergedAndCreatesNothing`
+  - `RegistrationFlowIntegrationTests#identityTakenBeforeVerifyIs410AndLeavesNoOrphanAccount`（建号 + 挂身份同一事务；去掉 `@Transactional` 即失败）
   - `RegistrationFlowIntegrationTests#wrongCodeIs400UntilLockThen410`
   - `RegistrationFlowIntegrationTests#endpointsArePublicButNeedTheCookie`
   - `RegistrationServiceTests#fifthWrongCodeKillsTheSession_noResendAfterLock`

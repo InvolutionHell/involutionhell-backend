@@ -131,6 +131,20 @@ class RegistrationFlowIntegrationTests extends AbstractWebIntegrationTest {
     }
 
     @Test
+    void identityTakenBeforeVerifyIs410AndLeavesNoOrphanAccount() throws Exception {
+        Cookie reg = oauthLogin("race-1").getCookie(OAuthController.REG_COOKIE);
+        // 验证前同一身份被并发绑到了别的账号：建号之后挂身份撞 UNIQUE(provider, provider_user_id)
+        jdbc.update("INSERT INTO user_identities (user_id, provider, provider_user_id) "
+                + "SELECT id, ?, ? FROM user_accounts WHERE username = 'alice'", FAKE, "race-1");
+        int before = accounts();
+
+        String code = sendAndCaptureCode(reg, "race@example.com");
+        verify(reg, "race@example.com", code).andExpect(status().isGone());
+
+        assertThat(accounts()).as("建号 + 挂身份同一事务：不能留下没有身份的孤儿账号").isEqualTo(before);
+    }
+
+    @Test
     void wrongCodeIs400UntilLockThen410() throws Exception {
         Cookie reg = oauthLogin("new-4").getCookie(OAuthController.REG_COOKIE);
         sendAndCaptureCode(reg, "x@example.com");
