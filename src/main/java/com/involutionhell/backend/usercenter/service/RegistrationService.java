@@ -179,7 +179,8 @@ public class RegistrationService {
                 + "<p>10 分钟内有效。如果不是你本人操作，忽略即可。</p>";
         boolean sent = emailService.sendHtml(to, "InvolutionHell 注册验证码", html);
         if (!sent) {
-            log.warn("OTP 发信失败 pendingId={}", pendingId); // 不落收件邮箱（PII）
+            // 不落收件邮箱（PII），也不落 pendingId（它是注册会话的唯一凭据）
+            log.warn("OTP 发信失败 provider={}", s.reg.provider());
             return SendResult.SEND_FAILED;
         }
         return SendResult.SENT;
