@@ -13,10 +13,13 @@ import com.involutionhell.backend.usercenter.service.RegistrationService;
 import com.involutionhell.backend.usercenter.service.UserIdentityService;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.regex.Pattern;
 import me.zhyd.oauth.model.AuthCallback;
 import me.zhyd.oauth.model.AuthResponse;
 import me.zhyd.oauth.model.AuthUser;
@@ -159,12 +162,25 @@ public class OAuthController {
     static final int BIND_COOKIE_MAX_AGE_SECONDS = 1800;
     // 待注册会话（OTP）的 pendingId。AuthController 的 /auth/register/* 读它。
     public static final String REG_COOKIE = "ih_reg_pending";
+    // 登录 nonce 回显（INV-007）：前端发起时生成随机 n 存 sessionStorage，render 把它种进
+    // httpOnly cookie，登录成功时回显成 #token=..&n=..，前端只认与本 tab 存的 n 相等的 token。
+    // 攻击者能把受害者 tab 导航到自己的 #token=，但拿不到受害者的 n。
+    static final String LOGIN_NONCE_COOKIE = "ih_login_nonce";
+    private static final Pattern LOGIN_NONCE_RE = Pattern.compile("^[A-Za-z0-9_-]{16,64}$");
 
-    /** 发起登录：跳 provider 授权页。 */
+    /**
+     * 发起登录：跳 provider 授权页。n 不合法或缺失就不种 nonce cookie——老前端照常能登，
+     * 回调回落成不带 n 的 #token=（新前端会拒收它，见 INV-007）。
+     */
     @GetMapping("/oauth/render/{provider}")
-    public void renderAuth(@PathVariable String provider, HttpServletResponse response) throws IOException {
-        response.sendRedirect(startOAuth(provider, null, response)
-                .orElse(frontEndUrl + "/login?error=oauth_provider"));
+    public void renderAuth(@PathVariable String provider,
+                           @RequestParam(required = false) String n,
+                           HttpServletResponse response) throws IOException {
+        Optional<String> url = startOAuth(provider, null, response);
+        if (url.isPresent() && n != null && LOGIN_NONCE_RE.matcher(n).matches()) {
+            response.addHeader("Set-Cookie", buildCookie(LOGIN_NONCE_COOKIE, n, STATE_COOKIE_MAX_AGE_SECONDS));
+        }
+        response.sendRedirect(url.orElse(frontEndUrl + "/login?error=oauth_provider"));
     }
 
     /**
@@ -251,6 +267,8 @@ public class OAuthController {
         boolean bindMarker = "1".equals(readCookie(request, BIND_COOKIE));
         boolean bindFlow = isBind || bindMarker;
         response.addHeader("Set-Cookie", buildCookie(BIND_COOKIE, "", 0)); // 用完即清
+        String loginNonce = readCookie(request, LOGIN_NONCE_COOKIE);
+        response.addHeader("Set-Cookie", buildCookie(LOGIN_NONCE_COOKIE, "", 0)); // 同上，任何出口都清
 
         // 参数缺失（用户直接访问 / provider 异常回调）统一兜底到前端错误页。
         if (code == null || state == null) {
@@ -307,12 +325,13 @@ public class OAuthController {
         if (isBind) {
             handleBind(p, authUser, bindUserId, response);
         } else {
-            handleLogin(p, authUser, response);
+            handleLogin(p, authUser, loginNonce, response);
         }
     }
 
     /** 登录：灰度闸 → 登入已有账号发 token / 新用户去验证邮箱。 */
-    private void handleLogin(AuthProvider p, AuthUser authUser, HttpServletResponse response) throws IOException {
+    private void handleLogin(AuthProvider p, AuthUser authUser, String loginNonce, HttpServletResponse response)
+            throws IOException {
         // Discord 灰度：不放行的 id 在此弹回（换 token 已发生，但不建号/不登入）。
         // 直连 /oauth/render/discord 绕过前端按钮的人也一并挡在这里。
         if ("discord".equals(p.key()) && !discordAllowed(authUser.getUuid())) {
@@ -337,8 +356,9 @@ public class OAuthController {
             return;
         }
         switch (result) {
-            // token 放 URL fragment（#token=），不进服务器日志/Referer；前端读入 localStorage
-            case AuthService.LoggedIn(LoginResponse r) -> response.sendRedirect(frontEndUrl + "/#token=" + r.tokenValue());
+            // token 放 URL fragment（#token=），不进服务器日志/Referer；前端核对 n 后读入 localStorage
+            case AuthService.LoggedIn(LoginResponse r) -> response.sendRedirect(frontEndUrl + "/#token=" + enc(r.tokenValue())
+                    + (loginNonce == null ? "" : "&n=" + enc(loginNonce)));
             case AuthService.NeedsRegistration(String pendingId) -> {
                 // pendingId 只进 httpOnly cookie、绝不进 URL：URL 里的 pendingId 可以被转发给别人，
                 // 受害者在攻击者的注册会话里验证自己的邮箱 → 攻击者的第三方身份拿到受害者的已验证邮箱
@@ -377,6 +397,10 @@ public class OAuthController {
             response.sendRedirect(frontEndUrl + "/settings?bind_error=" + e.errorCode());
             return;
         }
+    }
+
+    private static String enc(String v) {
+        return URLEncoder.encode(v, StandardCharsets.UTF_8);
     }
 
     private static String displayNameOf(AuthUser authUser) {

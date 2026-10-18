@@ -286,9 +286,24 @@ class OAuthControllerIntegrationTests extends AbstractWebIntegrationTest {
 
     /** 走一次登录（非绑定）：render 拿 state cookie → 回调。返回重定向地址。 */
     private String login(String provider, String code) throws Exception {
-        Cookie state = mockMvc.perform(get("/oauth/render/" + provider)).andReturn().getResponse()
-                .getCookie(OAuthController.STATE_COOKIE);
-        return callback(provider, code, new Cookie[]{state}, null);
+        return login(provider, code, null).getRedirectedUrl();
+    }
+
+    /** 同上，render 带 ?n=（null 即不带），把 render 种下的 cookie 全数带回回调。 */
+    private MockHttpServletResponse login(String provider, String code, String n) throws Exception {
+        var render = get("/oauth/render/" + provider);
+        if (n != null) {
+            render.param("n", n);
+        }
+        // 浏览器不会回传 Max-Age=0 的清除型 cookie
+        Cookie[] cookies = java.util.Arrays.stream(mockMvc.perform(render).andReturn().getResponse().getCookies())
+                .filter(c -> c.getMaxAge() != 0).toArray(Cookie[]::new);
+        Cookie state = java.util.Arrays.stream(cookies)
+                .filter(c -> c.getName().equals(OAuthController.STATE_COOKIE)).findFirst().orElseThrow();
+        return mockMvc.perform(get("/api/auth/callback/" + provider)
+                        .param("code", code).param("state", state.getValue()).cookie(cookies))
+                .andExpect(status().is3xxRedirection())
+                .andReturn().getResponse();
     }
 
     private int accountCount() {
@@ -387,6 +402,66 @@ class OAuthControllerIntegrationTests extends AbstractWebIntegrationTest {
         Cookie marker = res.getCookie(OAuthController.BIND_COOKIE);
         assertThat(marker).isNotNull();
         assertThat(marker.getMaxAge()).isZero();
+    }
+
+    // =============================================
+    // 登录 nonce 回显（INV-007）：#token= 只回给发起登录的那个 tab
+    // =============================================
+
+    private static final String NONCE = "AbCdEfGhIjKlMnOp_-0123";
+
+    @Test
+    void renderWithValidNonceSetsLoginNonceCookie() throws Exception {
+        MockHttpServletResponse res = mockMvc.perform(get("/oauth/render/" + FAKE).param("n", NONCE))
+                .andExpect(status().is3xxRedirection())
+                .andReturn().getResponse();
+        Cookie nonce = res.getCookie(OAuthController.LOGIN_NONCE_COOKIE);
+        assertThat(nonce).isNotNull();
+        assertThat(nonce.getValue()).isEqualTo(NONCE);
+        assertThat(nonce.isHttpOnly()).isTrue();
+        assertThat(nonce.getMaxAge()).isEqualTo(300);
+        assertThat(nonce.getPath()).isEqualTo("/");
+        assertThat(res.getHeaders("Set-Cookie"))
+                .anySatisfy(h -> assertThat(h).startsWith(OAuthController.LOGIN_NONCE_COOKIE + "=").contains("SameSite=Lax"));
+    }
+
+    @Test
+    void renderWithInvalidOrMissingNonceSetsNone() throws Exception {
+        for (String n : new String[]{"short", "a".repeat(65), "has space in it!!", "AbCdEfGh;Path=/x;"}) {
+            assertThat(mockMvc.perform(get("/oauth/render/" + FAKE).param("n", n)).andReturn().getResponse()
+                    .getCookie(OAuthController.LOGIN_NONCE_COOKIE)).as(n).isNull();
+        }
+        assertThat(mockMvc.perform(get("/oauth/render/" + FAKE)).andReturn().getResponse()
+                .getCookie(OAuthController.LOGIN_NONCE_COOKIE)).isNull();
+    }
+
+    @Test
+    void loginSuccessEchoesNonceFromCookieAndClearsIt() throws Exception {
+        account(FAKE + "_n1", new String[]{FAKE, "n1"});
+        MockHttpServletResponse res = login(FAKE, "n1", NONCE);
+
+        assertThat(res.getRedirectedUrl()).matches(".*/#token=[^&]+&n=" + NONCE);
+        assertThat(res.getCookie(OAuthController.LOGIN_NONCE_COOKIE).getMaxAge()).isZero();
+    }
+
+    @Test
+    void loginSuccessWithoutNonceCookieRedirectsWithPlainToken() throws Exception {
+        account(FAKE + "_n2", new String[]{FAKE, "n2"});
+
+        assertThat(login(FAKE, "n2", null).getRedirectedUrl()).matches(".*/#token=[^&]+");
+    }
+
+    @Test
+    void nonceCookieIsClearedOnErrorAndRegistrationRedirects() throws Exception {
+        MockHttpServletResponse reg = login(FAKE, "n-new", NONCE);
+        assertThat(reg.getRedirectedUrl()).as("注册跳转不带 n").endsWith("/login/verify");
+        assertThat(reg.getCookie(OAuthController.LOGIN_NONCE_COOKIE).getMaxAge()).isZero();
+
+        MockHttpServletResponse err = mockMvc.perform(get("/api/auth/callback/" + FAKE)
+                        .cookie(new Cookie(OAuthController.LOGIN_NONCE_COOKIE, NONCE)))
+                .andReturn().getResponse();
+        assertThat(err.getRedirectedUrl()).endsWith("/login?error=oauth_failed");
+        assertThat(err.getCookie(OAuthController.LOGIN_NONCE_COOKIE).getMaxAge()).isZero();
     }
 
     // =============================================

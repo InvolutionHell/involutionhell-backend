@@ -130,10 +130,20 @@
 - **保护点**：`OAuthController#login`（`/api/auth/callback/{provider}`）的 state
   双提交校验——URL 里的 `state` 必须等于本次 `renderAuth` 种下的 `ih_oauth_state`
   httpOnly cookie，缺失/不匹配即在换 token 前拒绝。
+  登录成功的 `#token=` 必须带回发起登录那个 tab 的 nonce：前端（SignInButton）生成随机 `n`
+  存进 sessionStorage，`GET /oauth/render/{provider}?n=` 把它种进 `ih_login_nonce` httpOnly cookie
+  （`^[A-Za-z0-9_-]{16,64}$` 才种，Max-Age 同 state cookie 300s），回调成功跳
+  `/#token=<T>&n=<n>`；回调的每个出口都清掉这个 cookie。前端（`lib/use-auth.tsx`）只收 `n` 与本 tab
+  存的值相等的 token。
 - **测试**：
   - `OAuthControllerIntegrationTests#callbackWithoutStateCookieIsRejectedBeforeTokenExchange`
   - `OAuthControllerIntegrationTests#callbackWithMatchingStateCookieProceedsPastStateCheck`（反向）
   - `OAuthControllerIntegrationTests#renderSetsStateCookie`（前置条件）
+  - `OAuthControllerIntegrationTests#renderWithValidNonceSetsLoginNonceCookie`
+  - `OAuthControllerIntegrationTests#renderWithInvalidOrMissingNonceSetsNone`
+  - `OAuthControllerIntegrationTests#loginSuccessEchoesNonceFromCookieAndClearsIt`
+  - `OAuthControllerIntegrationTests#loginSuccessWithoutNonceCookieRedirectsWithPlainToken`（老前端兼容）
+  - `OAuthControllerIntegrationTests#nonceCookieIsClearedOnErrorAndRegistrationRedirects`
   - `OAuthControllerIntegrationTests#bindEntryRequiresLogin`（绑定入口鉴权）
   - `OAuthControllerIntegrationTests#bindEntryRequiresLoginEvenForUnknownProvider`
   - `OAuthControllerIntegrationTests#bindStartIsNotAcceptedViaGet`
@@ -164,10 +174,18 @@
   标记寿命 30 分钟，**必须长于** 5 分钟的 state cookie：两者同时过期的话，在 provider 页
   停太久的绑定回来什么都不剩，会被送去 `/login?error=oauth_state`，用户再点登录就分叉出新账号；
   标记还在则回到 `/settings?bind_error=oauth_state`。
+  **nonce 回显**补的是 state 管不到的另一半：state 只证明"回调属于发起它的浏览器"，挡不住攻击者用
+  自己的账号走完登录、再把受害者的 tab 导航到 `https://involutionhell.com/#token=<攻击者 token>`
+  （`window.open` 拿到的句柄、provider 授权页都不切断 opener）。受害者就登进了攻击者的账号，之后的
+  AI 对话、投稿、甚至设置页里的"连接"都落到攻击者名下。攻击者拿不到受害者 tab 里的 nonce，
+  带不出能对上的 `n`。nonce 放 cookie 而不是 state：state 进 provider 的 URL，cookie 只在本浏览器。
+  cookie 缺失时退回不带 `n` 的 `#token=`，只为让旧前端在后端先上线期间照常登录；新前端拒收它。
 - **历史**：2026-07-19 随多 provider 身份体系 M1 引入（RFC #42 / ADR-001）。
   编号说明：INV-006 已被"付费 LLM 端点限流"占用，按流水规则用 INV-007。
   2026-10-18 #57 review：绑定发起由 cookie 鉴权的 GET 改为 POST（review 复现了"种 token +
   顶级导航"把受害者 Discord 绑进攻击者账号的链路），标记寿命与 state cookie 脱钩。
+  同日 wrap-up review：前端只在 sessionStorage 存时间戳的 nonce 挡不住 opener 改写 tab 地址，
+  改为 render 种 `ih_login_nonce`、回调回显 `&n=`（后端先上线，再上前端）。
 
 ## INV-008 · Discord 灰度闸只放行白名单与已有账号，且不得静默失效
 

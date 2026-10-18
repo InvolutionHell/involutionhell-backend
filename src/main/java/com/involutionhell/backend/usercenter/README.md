@@ -96,7 +96,7 @@ provider 邮箱只拿来预填验证页,永远不落库(SECURITY.md INV-012)。
 
 ```
 登录  GET  /oauth/render/{provider}  →  provider 授权页  →  回调  →  身份行 → 用户名(仅无身份行的老账号) → 已验证邮箱挂靠
-                                                                     ├ 命中 → 302 /#token=<satoken>
+                                                                     ├ 命中 → 302 /#token=<satoken>&n=<render 时的 ?n=>(INV-007)
                                                                      └ 新用户 → 302 /login/verify + ih_reg_pending cookie → OTP 注册(见下)
 绑定  POST /oauth/bind/{provider}    →  返回 {url},前端跳转  →  provider 授权页  →  回调  →  挂到当前账号
       （需已登录）                                                                         不建号 / 不换会话 / 不发新 token
