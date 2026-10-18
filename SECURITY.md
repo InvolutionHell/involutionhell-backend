@@ -310,8 +310,11 @@
     httpOnly、SameSite=Lax 的 `ih_reg_pending` cookie（Max-Age 900），**绝不进 URL**。
   - `usercenter/controller/AuthController` `/auth/register/{pending,send-otp,verify}`：公开
     （`SaTokenConfigure` notMatch `/auth/register/*`），cookie 是唯一凭据。
-  - `usercenter/service/RegistrationService`：会话内至多 5 封、间隔 ≥60s；每个收件邮箱每天 5 封、
-    每个第三方身份每天 10 封；累计 5 次错码即作废会话；OTP 10 分钟、会话 15 分钟。
+  - `usercenter/service/RegistrationService`：会话内至多 5 封、间隔 ≥60s；每个（收件邮箱, 第三方身份）
+    每天 5 封、每个收件邮箱每天 20 封、每个第三方身份每天 10 封。先查完全部限额才一起占位（被一个限额
+    拒掉的请求不吃别的限额）；发信失败全部退还（冷却照算）并作废本次的码；累计 5 次错码即作废会话；
+    OTP 10 分钟、会话 15 分钟。pendingId 不进日志（只有 `registration.otp.dev-console=true` 时的
+    DEV-OTP 行打印它）。
   - `src/main/resources/schema.sql`：`user_accounts` / `user_identities` 没有存 provider token 的列；
     OAuth 换到的 token 只用来取一次资料，拒绝/失败时 `OAuthController#revokeQuietly` 撤销。
 - **测试**：
@@ -327,7 +330,11 @@
   - `RegistrationFlowIntegrationTests#wrongCodeIs400UntilLockThen410`
   - `RegistrationFlowIntegrationTests#endpointsArePublicButNeedTheCookie`
   - `RegistrationServiceTests#fifthWrongCodeKillsTheSession_noResendAfterLock`
-  - `RegistrationServiceTests#sendsToOneEmailAreCappedAcrossSessions`
+  - `RegistrationServiceTests#anotherIdentityExhaustingItsSendsToAnEmailDoesNotLockOutTheOwner`
+  - `RegistrationServiceTests#sendsToOneEmailHaveAGlobalCeilingAcrossIdentities`
+  - `RegistrationServiceTests#requestsRejectedByOneCapDoNotConsumeTheOthers`
+  - `RegistrationServiceTests#failedSendsDoNotConsumeQuota`
+  - `RegistrationServiceTests#codeOfAFailedSendCannotBeVerified`
   - `RegistrationServiceTests#sendsFromOneIdentityAreCappedAcrossSessions`
   - `OAuthControllerIntegrationTests#unverifiedEmailPlantedViaBindNeverCapturesAVictimsFirstLogin`（攻击链端到端）
   - `OAuthControllerIntegrationTests#verifiedEmailNeverAutoLinksIntoAccountThatAlreadyHasThatProvider`
@@ -343,7 +350,15 @@
      登录后显式绑定（INV-007）。409 出现在 OTP 通过之后，不能拿来探测哪些邮箱注册过。
   4. 新号角色恰好 `user`：注册入口是公开的，任何角色/权限漂移都直接是越权。
   5. provider token 不落库：落了，拖库就从"拿到一堆资料"升级成"拿着用户的授权去调对方 API"。
+  6. 限额不能变成锁死别人的工具：只按收件邮箱限 5 封/天时，攻击者用自己的第三方号对受害者邮箱发满
+     5 封，受害者当天就注册不了。所以单个号对单个邮箱的额度按（邮箱, 身份）算，按邮箱只留一个防轰炸的
+     天花板（20）；先查后占、失败退还，被拒或没送达的请求都不消耗额度。没送达的码必须作废：否则攻击者
+     耗尽发信配额后，受害者收不到邮件，码却还能被悄悄猜。
+  7. pendingId 是注册会话的唯一凭据，日志里出现就等于能被读日志的人重放：拿去发码到自己邮箱、验证，
+     受害者的第三方身份就挂进了攻击者建的账号。
 - **历史**：2026-10-18 随 OTP 注册接线与 Discord GA 引入（#57 review 的未验证邮箱植入攻击链）。
+  同日 wrap-up review：按邮箱 5 封/天的限额可被用来锁死受害者注册、计数先于检查与发信，改成上面的
+  三层限额 + 先查后占 + 失败退还；"OTP 发信失败"日志去掉 pendingId。
 
 ## INV-013 · 机器人桥接接口不能经代理访问
 

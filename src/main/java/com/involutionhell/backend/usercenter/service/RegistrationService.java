@@ -7,6 +7,7 @@ import com.involutionhell.backend.common.email.ResendEmailService;
 import com.involutionhell.backend.usercenter.model.PendingRegistration;
 import java.security.SecureRandom;
 import java.time.Duration;
+import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
@@ -26,8 +27,9 @@ import org.springframework.stereotype.Service;
  *     （不被重发刷新），pending 与 OTP 同生共死，避免两缓存 TTL 错配。
  *   - verifyAttempts 累积计在会话上、**不被重发重置**：整个会话至多 5 次校验尝试，
  *     6 位码的爆破面恒为 5/1e6，堵住"重发归零 attempts 无限爆破"。
- *   - 发信限流：会话内至多 5 封、两封间隔 ≥60s；跨会话每个收件邮箱每天 5 封、
- *     每个第三方身份每天 10 封，防邮件轰炸。第 5 次错码即作废会话。
+ *   - 发信限流：会话内至多 5 封、两封间隔 ≥60s；跨会话每个（收件邮箱, 第三方身份）每天 5 封、
+ *     每个收件邮箱每天 20 封、每个第三方身份每天 10 封，防邮件轰炸。先查完所有限额再一起占位，
+ *     发信失败退还（没送达的不算数，也不留可猜的码）。第 5 次错码即作废会话。
  *   - 校验+消费在会话锁内原子完成，双击/并发只成功一次，杜绝重复建号。
  *   - 校验通过返回**本次实际验证通过的 email**（不是 provider 预填的未验证地址）。
  *
@@ -48,11 +50,14 @@ public class RegistrationService {
     /** 会话寿命；OAuthController 的 ih_reg_pending cookie Max-Age 与之同源。 */
     public static final Duration SESSION_TTL = Duration.ofMinutes(15);
     // 跨会话日限额：每个 pendingId 都要一次真实 OAuth 才能拿到，但同一个第三方号可以反复拿。
-    // 按收件邮箱限 = 防轰炸 + 封顶针对单个邮箱的猜码总量（每会话 5 次 × 每日 5 个会话）；
+    // 按（收件邮箱, 第三方身份）限 = 一个号轰炸不了某个邮箱，也锁不死邮箱主人自己的注册——
+    //   只按邮箱限 5 的话，攻击者拿自己的号对受害者邮箱发满 5 封，受害者 24h 内就注册不了；
+    // 按收件邮箱总量限 = 多个号合伙轰炸同一收件箱的天花板，也封顶针对它的猜码总量（20 个会话 × 5 次）；
     // 按第三方身份限 = 防一个号把我们的发信域名当垃圾邮件中继。
     // ponytail: 不按 IP —— 后端看不到可信客户端 IP（Vercel 出口 IP 被所有人共享，
     // X-Real-IP 由 Vercel 填、Caddy 原样透传，直连 api 子域即可伪造）。
-    private static final int MAX_SENDS_PER_EMAIL_PER_DAY = 5;
+    private static final int MAX_SENDS_PER_EMAIL_IDENTITY_PER_DAY = 5;
+    private static final int MAX_SENDS_PER_EMAIL_PER_DAY = 20;
     private static final int MAX_SENDS_PER_IDENTITY_PER_DAY = 10;
     // 粗校验邮箱格式，挡住明显非法/注入型输入；真实有效性由"能收到码"证明。
     private static final Pattern EMAIL_RE = Pattern.compile("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$");
@@ -94,9 +99,36 @@ public class RegistrationService {
                 .build();
     }
 
-    /** 固定 24h 窗口计数（同 OpenAiStreamRateLimiter 的写法）；超限返回 false。 */
-    private boolean underDailyCap(String key, int cap) {
-        return dailySends.get(key, k -> new AtomicInteger()).incrementAndGet() <= cap;
+    private record DailyCap(String key, int cap) {}
+
+    /**
+     * 固定 24h 窗口计数（同 OpenAiStreamRateLimiter 的写法）。所有限额都没满才一起占一格，
+     * 满一个就一格都不占——不能让被拒的请求白白吃掉别的限额。检查与占位在同一把锁里，
+     * 并发会话冲不过上限；发信失败由 {@link #refundDaily} 退还。
+     * ponytail: 全局锁，临界区只是几次内存读写；发信量远到不了要分段锁的程度。
+     */
+    private boolean reserveDaily(List<DailyCap> caps) {
+        synchronized (dailySends) {
+            for (DailyCap c : caps) {
+                AtomicInteger n = dailySends.getIfPresent(c.key());
+                if (n != null && n.get() >= c.cap()) {
+                    return false;
+                }
+            }
+            caps.forEach(c -> dailySends.get(c.key(), k -> new AtomicInteger()).incrementAndGet());
+            return true;
+        }
+    }
+
+    private void refundDaily(List<DailyCap> caps) {
+        synchronized (dailySends) {
+            caps.forEach(c -> {
+                AtomicInteger n = dailySends.getIfPresent(c.key());
+                if (n != null) {
+                    n.decrementAndGet();
+                }
+            });
+        }
     }
 
     /** 一个注册会话的可变状态。所有读改在会话锁内完成。 */
@@ -128,7 +160,8 @@ public class RegistrationService {
     }
 
     /**
-     * 给指定邮箱发 6 位验证码。限流：会话至多 {@value #MAX_SENDS} 封、间隔 ≥60s。
+     * 给指定邮箱发 6 位验证码。限流：会话至多 {@value #MAX_SENDS} 封、间隔 ≥60s，加上跨会话日限额。
+     * 发信失败不计入任何限额（冷却照算，挡住对 Resend 的连发），且作废本次的码。
      * verifyAttempts 不在此重置。
      */
     public SendResult sendOtp(String pendingId, String email) {
@@ -140,6 +173,12 @@ public class RegistrationService {
         if (!EMAIL_RE.matcher(normalized).matches()) {
             return SendResult.INVALID_EMAIL;
         }
+        String emailKey = "email:" + normalized.toLowerCase(Locale.ROOT);
+        String identityKey = "id:" + s.reg.provider() + ":" + s.reg.providerUserId();
+        List<DailyCap> caps = List.of(
+                new DailyCap(emailKey + "|" + identityKey, MAX_SENDS_PER_EMAIL_IDENTITY_PER_DAY),
+                new DailyCap(emailKey, MAX_SENDS_PER_EMAIL_PER_DAY),
+                new DailyCap(identityKey, MAX_SENDS_PER_IDENTITY_PER_DAY));
         String code;
         String to;
         synchronized (s) {
@@ -150,9 +189,7 @@ public class RegistrationService {
             if (s.lastSendAtNanos != Long.MIN_VALUE && now - s.lastSendAtNanos < RESEND_COOLDOWN_NANOS) {
                 return SendResult.RATE_LIMITED;
             }
-            if (!underDailyCap("email:" + normalized.toLowerCase(Locale.ROOT), MAX_SENDS_PER_EMAIL_PER_DAY)
-                    || !underDailyCap("id:" + s.reg.provider() + ":" + s.reg.providerUserId(),
-                            MAX_SENDS_PER_IDENTITY_PER_DAY)) {
+            if (!reserveDaily(caps)) {
                 return SendResult.RATE_LIMITED;
             }
             code = String.format(Locale.ROOT, "%06d", RANDOM.nextInt(1_000_000));
@@ -179,6 +216,11 @@ public class RegistrationService {
                 + "<p>10 分钟内有效。如果不是你本人操作，忽略即可。</p>";
         boolean sent = emailService.sendHtml(to, "InvolutionHell 注册验证码", html);
         if (!sent) {
+            synchronized (s) {
+                s.otpCode = null; // 没送达的码不能留在会话里被猜
+                s.sends--;
+            }
+            refundDaily(caps);
             // 不落收件邮箱（PII），也不落 pendingId（它是注册会话的唯一凭据）
             log.warn("OTP 发信失败 provider={}", s.reg.provider());
             return SendResult.SEND_FAILED;

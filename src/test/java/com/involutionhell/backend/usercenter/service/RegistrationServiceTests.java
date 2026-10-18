@@ -110,20 +110,78 @@ class RegistrationServiceTests {
         assertThat(svc.sendOtp(pid, "a@e.com")).isEqualTo(SendResult.SESSION_EXPIRED);
     }
 
+    /** 一次真实 OAuth = 一个新会话；identity 即第三方 user id。 */
+    private String session(String identity) {
+        return svc.begin(new PendingRegistration("discord", identity, "N", null, null, null));
+    }
+
     @Test
-    void sendsToOneEmailAreCappedAcrossSessions() {
+    void anotherIdentityExhaustingItsSendsToAnEmailDoesNotLockOutTheOwner() {
         when(email.sendHtml(anyString(), anyString(), anyString())).thenReturn(true);
         for (int i = 0; i < 5; i++) {
-            // 每个会话 = 一次真实 OAuth；换会话不能绕过按邮箱的日限额
-            String pid = svc.begin(new PendingRegistration("discord", "snow-" + i, "N", null, null, null));
-            assertThat(svc.sendOtp(pid, "Victim@E.com")).isEqualTo(SendResult.SENT);
+            // 换会话不能绕过（邮箱, 身份）的日限额
+            assertThat(svc.sendOtp(session("attacker"), "Victim@X.com")).isEqualTo(SendResult.SENT);
         }
-        String sixth = svc.begin(new PendingRegistration("discord", "snow-x", "N", null, null, null));
-        assertThat(svc.sendOtp(sixth, "victim@e.com")).as("大小写不同也算同一邮箱").isEqualTo(SendResult.RATE_LIMITED);
-        assertThat(svc.sendOtp(sixth, "other@e.com")).isEqualTo(SendResult.SENT);
+        assertThat(svc.sendOtp(session("attacker"), "victim@x.com")).as("大小写不同也算同一邮箱")
+                .isEqualTo(SendResult.RATE_LIMITED);
+        // 邮箱主人自己的身份照常能发——只按邮箱限 5 封时，这里是 24h 的注册锁死
+        assertThat(svc.sendOtp(session("victim"), "victim@x.com")).isEqualTo(SendResult.SENT);
         ticker.advance(Duration.ofDays(1).plusSeconds(1));
-        String next = svc.begin(new PendingRegistration("discord", "snow-y", "N", null, null, null));
-        assertThat(svc.sendOtp(next, "victim@e.com")).isEqualTo(SendResult.SENT);
+        assertThat(svc.sendOtp(session("attacker"), "victim@x.com")).isEqualTo(SendResult.SENT);
+    }
+
+    @Test
+    void sendsToOneEmailHaveAGlobalCeilingAcrossIdentities() {
+        when(email.sendHtml(anyString(), anyString(), anyString())).thenReturn(true);
+        for (int i = 0; i < 20; i++) {
+            assertThat(svc.sendOtp(session("snow-" + i / 5), "victim@x.com")).isEqualTo(SendResult.SENT);
+        }
+        String fresh = session("snow-fresh");
+        assertThat(svc.sendOtp(fresh, "VICTIM@x.com")).isEqualTo(SendResult.RATE_LIMITED);
+        assertThat(svc.sendOtp(fresh, "other@x.com")).isEqualTo(SendResult.SENT);
+    }
+
+    @Test
+    void requestsRejectedByOneCapDoNotConsumeTheOthers() {
+        when(email.sendHtml(anyString(), anyString(), anyString())).thenReturn(true);
+        for (int i = 0; i < 10; i++) {
+            assertThat(svc.sendOtp(session("spammer"), "e" + i + "@x.com")).isEqualTo(SendResult.SENT);
+        }
+        // 身份限额已满：被拒的请求不能顺手吃掉受害者邮箱的限额
+        for (int i = 0; i < 25; i++) {
+            assertThat(svc.sendOtp(session("spammer"), "victim@x.com")).isEqualTo(SendResult.RATE_LIMITED);
+        }
+        assertThat(svc.sendOtp(session("victim"), "victim@x.com")).isEqualTo(SendResult.SENT);
+    }
+
+    @Test
+    void failedSendsDoNotConsumeQuota() {
+        when(email.sendHtml(anyString(), anyString(), anyString())).thenReturn(false);
+        String pid = svc.begin(reg(null));
+        for (int i = 0; i < 6; i++) {
+            assertThat(svc.sendOtp(pid, "a@e.com")).isEqualTo(SendResult.SEND_FAILED);
+            assertThat(svc.sendOtp(pid, "a@e.com")).as("失败也走冷却").isEqualTo(SendResult.RATE_LIMITED);
+            ticker.advance(Duration.ofSeconds(61));
+        }
+        // 6 次失败若计数，会话 5 封 /（邮箱, 身份）5 封都已用完
+        when(email.sendHtml(anyString(), anyString(), anyString())).thenReturn(true);
+        for (int i = 0; i < 5; i++) {
+            assertThat(svc.sendOtp(pid, "a@e.com")).isEqualTo(SendResult.SENT);
+            ticker.advance(Duration.ofSeconds(61));
+        }
+    }
+
+    @Test
+    void codeOfAFailedSendCannotBeVerified() {
+        when(email.sendHtml(anyString(), anyString(), anyString())).thenReturn(false);
+        String pid = svc.begin(reg("a@e.com"));
+        assertThat(svc.sendOtp(pid, "a@e.com")).isEqualTo(SendResult.SEND_FAILED);
+        ArgumentCaptor<String> html = ArgumentCaptor.forClass(String.class);
+        verify(email).sendHtml(eq("a@e.com"), anyString(), html.capture());
+        Matcher m = Pattern.compile("(\\d{6})").matcher(html.getValue());
+        assertThat(m.find()).isTrue();
+
+        assertThat(svc.verifyAndConsume(pid, "a@e.com", m.group(1))).as("没送达的码不能拿来猜").isEmpty();
     }
 
     @Test
