@@ -144,6 +144,9 @@ public class OAuthController {
     // OAuth state 双提交 cookie 名。INV-007：callback 校验 URL state 必须等于此 cookie，
     // 二者都由本次 render 生成——防登录 CSRF（攻击者无法向受害者浏览器种此 cookie）。
     static final String STATE_COOKIE = "ih_oauth_state";
+    // 绑定流程标记。意图存在内存里，过期/重放/重启都会丢——没有这个标记，回调只能把
+    // 丢了意图的绑定当成登录处理，按该第三方身份建号或登进别的账号。
+    static final String BIND_COOKIE = "ih_oauth_bind";
     private static final int STATE_COOKIE_MAX_AGE_SECONDS = 300;
 
     /** 发起登录：跳 provider 授权页。 */
@@ -188,12 +191,16 @@ public class OAuthController {
                 bindUserId != null ? "bind" : "render", provider, p.redirectUri());
         // state 同时种进 httpOnly cookie。SameSite=Lax 是关键：callback 是 provider 发起的
         // 跨站顶级导航，Strict 会剥掉 cookie；Lax 恰好在顶级 GET 导航时携带。
-        response.addHeader("Set-Cookie", buildStateCookie(state, STATE_COOKIE_MAX_AGE_SECONDS));
+        response.addHeader("Set-Cookie", buildCookie(STATE_COOKIE, state, STATE_COOKIE_MAX_AGE_SECONDS));
+        // 登录发起时清掉可能残留的绑定标记，否则放弃绑定后 5 分钟内的登录会被误判成绑定
+        response.addHeader("Set-Cookie", bindUserId != null
+                ? buildCookie(BIND_COOKIE, "1", STATE_COOKIE_MAX_AGE_SECONDS)
+                : buildCookie(BIND_COOKIE, "", 0));
         response.sendRedirect(authRequest.authorize(state));
     }
 
-    private String buildStateCookie(String value, int maxAgeSeconds) {
-        return org.springframework.http.ResponseCookie.from(STATE_COOKIE, value)
+    private String buildCookie(String name, String value, int maxAgeSeconds) {
+        return org.springframework.http.ResponseCookie.from(name, value)
                 .httpOnly(true)
                 .secure(frontEndUrl.startsWith("https"))   // 本地 http 下不置 Secure，否则浏览器不回传
                 .sameSite("Lax")
@@ -203,10 +210,10 @@ public class OAuthController {
                 .toString();
     }
 
-    private String readStateCookie(jakarta.servlet.http.HttpServletRequest request) {
+    private String readCookie(jakarta.servlet.http.HttpServletRequest request, String name) {
         if (request.getCookies() == null) return null;
         for (jakarta.servlet.http.Cookie c : request.getCookies()) {
-            if (STATE_COOKIE.equals(c.getName())) return c.getValue();
+            if (name.equals(c.getName())) return c.getValue();
         }
         return null;
     }
@@ -224,21 +231,32 @@ public class OAuthController {
         // 意图在最前面取出并消费（一次性），后续所有错误分支才知道该跳登录页还是设置页。
         Long bindUserId = state == null ? null : bindIntents.asMap().remove(state);
         boolean isBind = bindUserId != null;
+        // 浏览器说"我在绑定"但服务端没有意图（过期/重放/重启）：绝不能落进登录分支
+        boolean bindMarker = "1".equals(readCookie(request, BIND_COOKIE));
+        boolean bindFlow = isBind || bindMarker;
+        response.addHeader("Set-Cookie", buildCookie(BIND_COOKIE, "", 0)); // 用完即清
 
         // 参数缺失（用户直接访问 / provider 异常回调）统一兜底到前端错误页。
         if (code == null || state == null) {
             log.warn("[OAuth] {} callback missing code/state (direct access?), redirecting", provider);
-            response.sendRedirect(errorUrl(isBind, "oauth_failed"));
+            response.sendRedirect(errorUrl(bindFlow, "oauth_failed"));
             return;
         }
 
         // INV-007：state 必须等于本次 render 种下的 cookie（双提交校验）。缺失/不匹配
         // 即拒绝，且在换 token 之前——不给伪造 state 触发登录的机会，也不白打 provider。
-        String cookieState = readStateCookie(request);
-        response.addHeader("Set-Cookie", buildStateCookie("", 0)); // 用完即清
+        String cookieState = readCookie(request, STATE_COOKIE);
+        response.addHeader("Set-Cookie", buildCookie(STATE_COOKIE, "", 0)); // 用完即清
         if (cookieState == null || !cookieState.equals(state)) {
             log.warn("[OAuth] {} state 与 cookie 不匹配（CSRF 或 cookie 丢失），拒绝", provider);
-            response.sendRedirect(errorUrl(isBind, "oauth_state"));
+            response.sendRedirect(errorUrl(bindFlow, "oauth_state"));
+            return;
+        }
+
+        // 同样在换 token 之前：丢了意图的绑定不值得再打一次 provider
+        if (!isBind && bindMarker) {
+            log.warn("[OAuth] {} 绑定标记在但意图缺失（过期/重放/重启），拒绝且不当作登录", provider);
+            response.sendRedirect(frontEndUrl + "/settings?bind_error=bind_session");
             return;
         }
 

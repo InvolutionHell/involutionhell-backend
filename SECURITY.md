@@ -136,6 +136,10 @@
   - `OAuthControllerIntegrationTests#renderSetsStateCookie`（前置条件）
   - `OAuthControllerIntegrationTests#bindEntryRequiresLogin`（绑定入口鉴权）
   - `OAuthControllerIntegrationTests#bindEntryRequiresLoginEvenForUnknownProvider`
+  - `OAuthControllerIntegrationTests#bindCallbackInSameSessionAttachesIdentityWithoutCreatingAccount`（反向）
+  - `OAuthControllerIntegrationTests#bindCallbackAfterLogoutIsRejected`
+  - `OAuthControllerIntegrationTests#bindCallbackUnderAnotherUsersSessionIsRejected`
+  - `OAuthControllerIntegrationTests#replayedBindCallbackIsRejectedInsteadOfFallingIntoLogin`
 - **为什么**：callback 是 provider 发起的顶级 GET，不带 Authorization header；若
   直接信任 URL `state`（尤其未来绑定流程把 loginId 塞进 state），攻击者可发起
   流程拿到合法 state 诱导受害者授权，把受害者的第三方身份绑/登进攻击者预期的
@@ -148,6 +152,9 @@
   （`OAuthController#bindIntents`，5 分钟 TTL、一次性消费），回调时取回并**二次核对
   当前会话仍是同一个人**（中途登出/换号即拒绝）。state 在此仅作不可猜测的查找键，
   不承载任何可信信息——把 userId 写进 state 就等于把绑定劫持焊死进流程。
+  意图丢失（过期/重放/进程重启）时回调**不得**落进登录分支——否则会按该第三方身份
+  建号或登进别的账号。发起绑定时同时种 `ih_oauth_bind` 标记 cookie（发起登录时清掉），
+  回调见标记而无意图即在换 token 前弹回 `/settings?bind_error=bind_session`。
 - **历史**：2026-07-19 随多 provider 身份体系 M1 引入（RFC #42 / ADR-001）。
   编号说明：INV-006 已被"付费 LLM 端点限流"占用，按流水规则用 INV-007。
 

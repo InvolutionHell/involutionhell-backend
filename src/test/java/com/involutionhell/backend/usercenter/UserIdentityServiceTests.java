@@ -177,4 +177,35 @@ class UserIdentityServiceTests extends AbstractWebIntegrationTest {
         assertThat(jdbc.queryForObject(
                 "SELECT github_id FROM user_accounts WHERE id = ?", Long.class, userId)).isEqualTo(114514L);
     }
+
+    @Test
+    void bindReportsTakenWhenGithubIdColumnHeldByAnotherAccountAndRollsBack() {
+        // 老账号占着 github_id=777 但没有身份行（M0 回填前的窗口），预检看不见它
+        createUser(777L);
+        long userId = createUser(null);
+        addIdentity(userId, "discord", "dc-" + userId);
+
+        assertThatThrownBy(() -> service.bind(userId, "github", "777", null, null))
+                .isInstanceOf(UserIdentityService.IdentityAlreadyBoundException.class)
+                .satisfies(e -> assertThat(
+                        ((UserIdentityService.IdentityAlreadyBoundException) e).errorCode()).isEqualTo("bind_taken"));
+        // 身份行随事务回滚，不留半绑定状态
+        assertThat(service.listForUser(userId)).extracting("provider").containsExactly("discord");
+    }
+
+    @Test
+    void bindRaceOnIdentityInsertIsReportedAsTakenNot500() {
+        // 两个账号并发绑同一身份：都过了预检，后到的 insert 撞 UNIQUE(provider, provider_user_id)
+        var repo = org.mockito.Mockito.mock(
+                com.involutionhell.backend.usercenter.repository.UserIdentityRepository.class);
+        org.mockito.Mockito.when(repo.insert(org.mockito.ArgumentMatchers.any()))
+                .thenThrow(new org.springframework.dao.DuplicateKeyException("uq_provider_user"));
+        var raced = new UserIdentityService(repo, org.mockito.Mockito.mock(
+                com.involutionhell.backend.usercenter.repository.UserAccountRepository.class));
+
+        assertThatThrownBy(() -> raced.bind(1L, "discord", "dc-race", null, null))
+                .isInstanceOf(UserIdentityService.IdentityAlreadyBoundException.class)
+                .satisfies(e -> assertThat(
+                        ((UserIdentityService.IdentityAlreadyBoundException) e).errorCode()).isEqualTo("bind_taken"));
+    }
 }

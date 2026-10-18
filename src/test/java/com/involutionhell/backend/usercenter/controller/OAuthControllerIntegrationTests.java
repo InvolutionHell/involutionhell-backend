@@ -6,7 +6,21 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.involutionhell.backend.support.AbstractWebIntegrationTest;
+import com.involutionhell.backend.usercenter.oauth.AuthProvider;
+import jakarta.servlet.http.Cookie;
+import me.zhyd.oauth.enums.AuthResponseStatus;
+import me.zhyd.oauth.model.AuthCallback;
+import me.zhyd.oauth.model.AuthResponse;
+import me.zhyd.oauth.model.AuthUser;
+import me.zhyd.oauth.request.AuthRequest;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MvcResult;
 
@@ -23,6 +37,7 @@ import org.springframework.test.web.servlet.MvcResult;
  *
  * callback 成功路径（需要真实 GitHub code + state）超出集成测试范围，
  * 该路径的业务逻辑已由 AuthServiceTests.loginByGithub*() 系列单元测试覆盖。
+ * 绑定回调例外：FakeProviderConfig 注册一个不发网络请求的假 provider，端到端走通。
  *
  * 强制 discord 未配置：否则本机 .env 里若有真实 AUTH_DISCORD_ID（被 source 进环境），
  * "未配置 discord → oauth_provider" 这条断言会因 discord 实际已配置而失败。
@@ -31,6 +46,7 @@ import org.springframework.test.web.servlet.MvcResult;
         "justauth.type.discord.client-id=",
         "justauth.type.discord.client-secret="
 })
+@Import(OAuthControllerIntegrationTests.FakeProviderConfig.class)
 class OAuthControllerIntegrationTests extends AbstractWebIntegrationTest {
 
     // =============================================
@@ -174,5 +190,153 @@ class OAuthControllerIntegrationTests extends AbstractWebIntegrationTest {
         // 鉴权必须先于 provider 解析，否则未登录者能通过响应差异探测支持哪些 provider
         mockMvc.perform(get("/oauth/bind/myspace"))
                 .andExpect(status().isUnauthorized());
+    }
+
+    // =============================================
+    // 绑定回调（M2b）—— 用 FakeProviderConfig 的假 provider 走通换 token
+    // =============================================
+
+    @Autowired
+    private JdbcTemplate jdbc;
+
+    @AfterEach
+    void cleanupFakeIdentities() {
+        jdbc.update("DELETE FROM user_identities WHERE provider = ?", FAKE);
+        // 回归失败时（回调误入登录分支）会建出 fakeoauth_* 账号，别让它污染其它测试
+        jdbc.update("DELETE FROM user_accounts WHERE username LIKE ?", FAKE + "_%");
+    }
+
+    /** 以 token 身份发起绑定，返回回调要带回的 state + 绑定标记 cookie。 */
+    private Cookie[] startBind(String token) throws Exception {
+        MockHttpServletResponse res = mockMvc.perform(get("/oauth/bind/" + FAKE).header("satoken", token))
+                .andExpect(status().is3xxRedirection())
+                .andReturn().getResponse();
+        Cookie state = res.getCookie(OAuthController.STATE_COOKIE);
+        Cookie marker = res.getCookie(OAuthController.BIND_COOKIE);
+        assertThat(marker).as("发起绑定必须种下绑定标记").isNotNull();
+        assertThat(marker.getValue()).isEqualTo("1");
+        return new Cookie[]{state, marker};
+    }
+
+    private String callback(String code, Cookie[] cookies, String token) throws Exception {
+        var req = get("/api/auth/callback/" + FAKE)
+                .param("code", code)
+                .param("state", cookies[0].getValue())
+                .cookie(cookies);
+        if (token != null) {
+            req.header("satoken", token);
+        }
+        return mockMvc.perform(req).andExpect(status().is3xxRedirection())
+                .andReturn().getResponse().getRedirectedUrl();
+    }
+
+    private int accountCount() {
+        return jdbc.queryForObject("SELECT count(*) FROM user_accounts", Integer.class);
+    }
+
+    private java.util.List<Long> ownersOf(String providerUserId) {
+        return jdbc.queryForList("SELECT user_id FROM user_identities WHERE provider = ? AND provider_user_id = ?",
+                Long.class, FAKE, providerUserId);
+    }
+
+    @Test
+    void bindCallbackInSameSessionAttachesIdentityWithoutCreatingAccount() throws Exception {
+        String alice = loginAsAlice();
+        int before = accountCount();
+
+        String location = callback("same-session", startBind(alice), alice);
+
+        assertThat(location).endsWith("/settings?bind=ok");
+        assertThat(ownersOf("same-session")).containsExactly(2L); // alice
+        assertThat(accountCount()).as("绑定不建号").isEqualTo(before);
+    }
+
+    @Test
+    void bindCallbackAfterLogoutIsRejected() throws Exception {
+        Cookie[] cookies = startBind(loginAsAlice());
+
+        assertThat(callback("logged-out", cookies, null)).endsWith("/settings?bind_error=bind_session");
+        assertThat(ownersOf("logged-out")).isEmpty();
+    }
+
+    @Test
+    void bindCallbackUnderAnotherUsersSessionIsRejected() throws Exception {
+        Cookie[] cookies = startBind(loginAsAlice());
+
+        assertThat(callback("other-user", cookies, loginAsAdmin())).endsWith("/settings?bind_error=bind_session");
+        assertThat(ownersOf("other-user")).isEmpty();
+    }
+
+    @Test
+    void replayedBindCallbackIsRejectedInsteadOfFallingIntoLogin() throws Exception {
+        String alice = loginAsAlice();
+        Cookie[] cookies = startBind(alice);
+        assertThat(callback("replayed", cookies, alice)).endsWith("/settings?bind=ok");
+        int before = accountCount();
+
+        // 意图已被一次性消费。没有绑定标记的话，这次会被当成登录：按假身份登录/建号。
+        assertThat(callback("replayed", cookies, alice)).endsWith("/settings?bind_error=bind_session");
+        // 换个 code 也一样——不能让"丢了意图"的回调建号
+        assertThat(callback("replayed-new", cookies, null)).endsWith("/settings?bind_error=bind_session");
+
+        assertThat(accountCount()).isEqualTo(before);
+        assertThat(ownersOf("replayed")).containsExactly(2L);
+        assertThat(ownersOf("replayed-new")).isEmpty();
+    }
+
+    @Test
+    void loginRenderClearsStaleBindMarker() throws Exception {
+        // 放弃绑定后再走登录：残留标记必须被清掉，否则登录回调会被误判成绑定
+        MockHttpServletResponse res = mockMvc.perform(get("/oauth/render/github"))
+                .andExpect(status().is3xxRedirection())
+                .andReturn().getResponse();
+        Cookie marker = res.getCookie(OAuthController.BIND_COOKIE);
+        assertThat(marker).isNotNull();
+        assertThat(marker.getMaxAge()).isZero();
+    }
+
+    static final String FAKE = "fakeoauth";
+
+    /**
+     * 假 provider：authorize 不发请求，login 把 code 当作第三方 uuid 返回。
+     * 每个测试用不同 code，互不撞 UNIQUE(provider, provider_user_id)。
+     */
+    @TestConfiguration
+    static class FakeProviderConfig {
+        @Bean
+        AuthProvider fakeOAuthProvider() {
+            return new AuthProvider() {
+                @Override
+                public String key() {
+                    return FAKE;
+                }
+
+                @Override
+                public String redirectUri() {
+                    return "https://example.com/api/auth/callback/" + FAKE;
+                }
+
+                @Override
+                public boolean isEmailVerified(AuthUser user) {
+                    return false;
+                }
+
+                @Override
+                public AuthRequest newRequest() {
+                    return new AuthRequest() {
+                        @Override
+                        public String authorize(String state) {
+                            return "https://fake.example/authorize?state=" + state;
+                        }
+
+                        @Override
+                        public AuthResponse login(AuthCallback cb) {
+                            return new AuthResponse<>(AuthResponseStatus.SUCCESS.getCode(), null,
+                                    AuthUser.builder().uuid(cb.getCode()).nickname("fake-" + cb.getCode()).build());
+                        }
+                    };
+                }
+            };
+        }
     }
 }

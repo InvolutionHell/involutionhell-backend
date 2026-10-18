@@ -8,6 +8,7 @@ import com.involutionhell.backend.usercenter.repository.UserIdentityRepository;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -85,16 +86,24 @@ public class UserIdentityService {
                     "你已经绑定过 " + normalized + " 了，一个账号同一登录方式只能绑一个");
         }
 
-        userIdentityRepository.insert(new UserIdentity(
-                null, userId, normalized, providerUserId, email, displayName, null, null));
+        // 上面的预检挡不住并发：两个账号同时绑同一身份都能过预检，后到的撞 UNIQUE。
+        // github_id 列同理（UNIQUE(github_id)，被一个尚无身份行的老账号占着）。
+        // 都归为 bind_taken 而不是 500；异常抛出即回滚，身份行不会单独留下。
+        try {
+            userIdentityRepository.insert(new UserIdentity(
+                    null, userId, normalized, providerUserId, email, displayName, null, null));
 
-        if ("github".equals(normalized)) {
-            try {
-                userAccountRepository.setGithubIdIfAbsent(userId, Long.parseLong(providerUserId));
-            } catch (NumberFormatException e) {
-                // github 的 uuid 就是数字用户 ID；非数字（极罕见）时跳过，不阻断绑定
-                log.warn("绑定 github 时 providerUserId 非数字，跳过 github_id 回填: userId={}", userId);
+            if ("github".equals(normalized)) {
+                try {
+                    userAccountRepository.setGithubIdIfAbsent(userId, Long.parseLong(providerUserId));
+                } catch (NumberFormatException e) {
+                    // github 的 uuid 就是数字用户 ID；非数字（极罕见）时跳过，不阻断绑定
+                    log.warn("绑定 github 时 providerUserId 非数字，跳过 github_id 回填: userId={}", userId);
+                }
             }
+        } catch (DataIntegrityViolationException e) {
+            throw new IdentityAlreadyBoundException("bind_taken",
+                    "该第三方账号已绑定到另一个账号，请先在那个账号里解绑");
         }
         return listForUser(userId);
     }

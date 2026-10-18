@@ -3,7 +3,7 @@
 这个包管三件事:**认证**(你是谁)、**身份绑定**(哪些第三方账号属于同一个人)、
 **账号**(资料/角色/关注)。接入新的登录方式(Google、Microsoft…)之前先读完这篇。
 
-> 安全不变量 INV-001..INV-008 在 `backend/SECURITY.md`,每条都有回归测试。
+> 安全不变量见 `backend/SECURITY.md`(编号持续新增,以那份为准),每条都有回归测试。
 > 改 auth/角色/密码/关注逻辑前必须先读那份,本文不重复。
 
 ---
@@ -91,7 +91,7 @@ public class GoogleAuthProvider implements AuthProvider {
 绑定意图决定,不由任何请求参数决定。
 
 ```
-登录  GET /oauth/render/{provider}   →  provider 授权页  →  回调  →  建号或按已验证邮箱挂靠  →  发 token
+登录  GET /oauth/render/{provider}   →  provider 授权页  →  回调  →  身份行 → 用户名 → 已验证邮箱挂靠 → 建号  →  发 token
 绑定  GET /oauth/bind/{provider}     →  provider 授权页  →  回调  →  挂到当前账号
       （需已登录）                                                    不建号 / 不换会话 / 不发新 token
 ```
@@ -107,6 +107,8 @@ public class GoogleAuthProvider implements AuthProvider {
 2. 以随机 `state` 为 key,把 userId 存进服务端内存(`bindIntents`,5 分钟 TTL,一次性消费)
 3. 回调时用 state 取回意图,并**二次核对当前会话仍是同一个人**(中途登出/换号则拒绝)
 4. `state` 同时走 `ih_oauth_state` httpOnly cookie 双提交校验(防登录 CSRF)
+5. 发起绑定还种 `ih_oauth_bind` 标记;回调见标记却取不到意图(过期/重放/重启)就弹回
+   `bind_session`,**绝不落进登录分支**——否则会按该第三方身份建号或登进别的账号
 
 `state` 在这里只是**不可猜测的查找键**,不承载任何可信信息。
 
@@ -119,7 +121,7 @@ public class GoogleAuthProvider implements AuthProvider {
 | `bind_taken` | 该第三方账号已绑到**别的**账号 | 先去那个账号解绑 |
 | `bind_duplicate` | 本账号已绑过同类 provider | 先解绑再绑新的 |
 | `bind_already_yours` | 已经绑在你自己账号上了 | 无需操作 |
-| `bind_session` | 从发起到回调之间会话变了 | 重新发起 |
+| `bind_session` | 从发起到回调之间会话变了,或绑定意图已失效(过期/重放) | 重新发起 |
 
 > **为什么绑定入口必须早于"对所有人开放新 provider"**
 > `UNIQUE (provider, provider_user_id)` 意味着一个第三方身份只能绑一个账号。
