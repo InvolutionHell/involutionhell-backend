@@ -9,6 +9,7 @@ import com.involutionhell.backend.community.repository.SharedLinkRepository;
 import com.involutionhell.backend.community.util.UrlNormalizer;
 import com.involutionhell.backend.usercenter.model.UserAccount;
 import com.involutionhell.backend.usercenter.service.UserCenterService;
+import com.involutionhell.backend.usercenter.service.UserIdentityService;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -55,6 +56,7 @@ public class SharedLinkService {
      * community 模块不应该直接摸 usercenter 的仓储层，跨模块访问只经过 service。
      */
     private final UserCenterService userCenterService;
+    private final UserIdentityService userIdentityService;
 
     /**
      * 缓存 discord-bridge 账号 id，避免每次 submitInternal 都查一次库。
@@ -74,10 +76,12 @@ public class SharedLinkService {
 
     public SharedLinkService(SharedLinkRepository linkRepo,
                              LinkReportRepository reportRepo,
-                             UserCenterService userCenterService) {
+                             UserCenterService userCenterService,
+                             UserIdentityService userIdentityService) {
         this.linkRepo = linkRepo;
         this.reportRepo = reportRepo;
         this.userCenterService = userCenterService;
+        this.userIdentityService = userIdentityService;
     }
 
     @Autowired
@@ -175,7 +179,8 @@ public class SharedLinkService {
                 SharedLinkStatus.PENDING,
                 0,                      // report_count
                 null, null,             // archived
-                null, null              // created/updated
+                null, null,             // created/updated
+                null                    // discord_user_id：网页提交没有
         );
         SharedLink saved = linkRepo.insert(draft);
         log.info("shared-link submitted: id={} submitter={} host={}",
@@ -194,16 +199,21 @@ public class SharedLinkService {
      *
      * 与 submit() 的差异：
      * - 不做 24h 限频（机器人是整群一把提，限频会把合法流量卡死）
-     * - 不关心前端登录态：submitter 固定取 seed 的 discord-bridge 账号
+     * - 不关心前端登录态：分享人的 Discord id 已绑定到可用账号时记到本人名下，
+     *   否则（没传 id / 没绑定 / 账号禁用）挂 seed 的 discord-bridge 账号
+     * - discordUserId 原样落库，没绑定的人日后绑定了还能按 id 改挂
      * - recommendation 前缀自动打「来自 Discord @{label}」，前端展示能看到真实分享人
      *
      * 与 submit() 一致的：
      * - 同样走 UrlNormalizer、去重、OG + DeepSeek 异步富化
      * - 同样的状态机（PENDING → APPROVED/PENDING_MANUAL/FLAGGED）
      * - 同样的 DuplicateKeyException 语义
+     *
+     * @param discordUserId 分享人的 Discord 用户 id（纯数字），可为 null（如 MCP 渠道）
      */
     @Transactional(rollbackFor = Exception.class)
-    public SharedLink submitInternal(String submitterLabel, String rawUrl, String recommendation) {
+    public SharedLink submitInternal(String submitterLabel, String rawUrl, String recommendation,
+                                     String discordUserId) {
         UrlNormalizer.Normalized norm = UrlNormalizer.normalize(rawUrl);
 
         Long resolvedBridgeId = bridgeId;
@@ -215,6 +225,9 @@ public class SharedLinkService {
                             "discord-bridge 账号不存在，检查 schema.sql 是否已执行 seed"));
             this.bridgeId = resolvedBridgeId;
         }
+        Long submitterId = discordUserId == null
+                ? resolvedBridgeId
+                : userIdentityService.findEnabledUserId("discord", discordUserId).orElse(resolvedBridgeId);
 
         String urlHash = UrlNormalizer.sha256Hex(norm.canonicalUrl());
 
@@ -229,7 +242,7 @@ public class SharedLinkService {
 
         SharedLink draft = new SharedLink(
                 null,
-                resolvedBridgeId,
+                submitterId,
                 norm.canonicalUrl(),
                 urlHash,
                 norm.host(),
@@ -241,11 +254,12 @@ public class SharedLinkService {
                 SharedLinkStatus.PENDING,
                 0,
                 null, null,
-                null, null
+                null, null,
+                discordUserId
         );
         SharedLink saved = linkRepo.insert(draft);
-        log.info("shared-link submitted via bridge: id={} label={} host={}",
-                saved.id(), submitterLabel, saved.host());
+        log.info("shared-link submitted via bridge: id={} label={} discordUserId={} submitter={} host={}",
+                saved.id(), submitterLabel, discordUserId, submitterId, saved.host());
 
         if (enrichmentWorker != null) {
             enrichmentWorker.enrich(saved.id());

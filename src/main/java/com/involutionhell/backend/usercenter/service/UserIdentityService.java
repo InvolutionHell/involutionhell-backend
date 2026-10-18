@@ -1,11 +1,13 @@
 package com.involutionhell.backend.usercenter.service;
 
 import com.involutionhell.backend.usercenter.dto.LinkedIdentityView;
+import com.involutionhell.backend.usercenter.model.UserAccount;
 import com.involutionhell.backend.usercenter.model.UserIdentity;
 import com.involutionhell.backend.usercenter.repository.UserAccountRepository;
 import com.involutionhell.backend.usercenter.repository.UserIdentityRepository;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -28,6 +30,17 @@ public class UserIdentityService {
         return userIdentityRepository.findByUserId(userId).stream()
                 .map(LinkedIdentityView::from)
                 .toList();
+    }
+
+    /**
+     * provider 身份 → 已启用账号的 id。没绑定或账号被禁用返回 empty。
+     * 给机器人渠道把 Discord 分享归到本人名下用，不涉及登录。
+     */
+    public Optional<Long> findEnabledUserId(String provider, String providerUserId) {
+        return userIdentityRepository.findByProviderAndProviderUserId(provider, providerUserId)
+                .flatMap(i -> userAccountRepository.findById(i.userId()))
+                .filter(UserAccount::enabled)
+                .map(UserAccount::id);
     }
 
     /**

@@ -53,7 +53,7 @@ public interface SharedLinkRepository {
     /** +1 report_count 并返回新值。3 及以上由 Service 层决定是否转 PENDING_MANUAL。 */
     int incrementReportCount(Long id);
 
-    /** 限频判定：某用户在 since 之后提交了几条。 */
+    /** 限频判定：某用户在 since 之后从网页提交了几条（不含机器人渠道）。 */
     int countBySubmitterSince(Long submitterId, java.time.Instant since);
 
     /** M9 失效探活：拉所有 APPROVED 的 (id, url)，用于 HEAD 探活。只拿需要的两列。 */

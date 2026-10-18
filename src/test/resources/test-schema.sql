@@ -127,6 +127,7 @@ CREATE TABLE IF NOT EXISTS shared_links (
     admin_note       TEXT,
     probe_fail_count INT          NOT NULL DEFAULT 0,
     probe_last_at    TIMESTAMP,
+    discord_user_id  VARCHAR(32),
     created_at       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (submitter_id) REFERENCES user_accounts(id) ON DELETE CASCADE

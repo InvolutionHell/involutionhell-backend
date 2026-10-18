@@ -77,7 +77,8 @@ class SharedLinkEnrichmentWorkerTests {
                 null, null, null, null, null,
                 null, Map.of(), SharedLinkStatus.PENDING,
                 0, null, null,
-                Instant.now(), Instant.now()
+                Instant.now(), Instant.now(),
+                null
         );
     }
 

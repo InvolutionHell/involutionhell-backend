@@ -17,6 +17,7 @@ import java.util.Map;
  * - status：见 SharedLinkStatus
  * - ogFetchError：OG 抓取失败时记录原因，前端降级展示仍保留卡片
  * - archivedAt / archivedReason：原文失效（HEAD 探活连续 2 次失败）后写入
+ * - discordUserId：机器人渠道的分享人 Discord id，网页提交为 null
  */
 public record SharedLink(
         Long id,
@@ -37,6 +38,7 @@ public record SharedLink(
         Instant archivedAt,
         String archivedReason,
         Instant createdAt,
-        Instant updatedAt
+        Instant updatedAt,
+        String discordUserId
 ) {
 }
