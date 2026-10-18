@@ -107,4 +107,105 @@ class UserIdentityServiceTests extends AbstractWebIntegrationTest {
         mockMvc.perform(delete("/api/user-center/identities/github"))
                 .andExpect(status().isUnauthorized());
     }
+
+    // ===================== M2b 绑定 =====================
+
+    @Test
+    void bindAttachesIdentityToExistingAccountWithoutCreatingOne() {
+        long userId = createUser(null);
+        addIdentity(userId, "github", "gh-" + userId);
+
+        var after = service.bind(userId, "discord", "dc-" + userId, "a@e.com", "Nick");
+
+        assertThat(after).hasSize(2);
+        assertThat(after).extracting(v -> v.provider()).containsExactlyInAnyOrder("github", "discord");
+        // 绑定不建号
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM user_accounts WHERE username LIKE 'ident-svc-%'", Integer.class)).isEqualTo(1);
+    }
+
+    @Test
+    void bindRejectsIdentityAlreadyOwnedByAnotherAccount() {
+        long owner = createUser(null);
+        addIdentity(owner, "github", "gh-owner-" + owner);
+        addIdentity(owner, "discord", "shared-discord-id");
+
+        long other = createUser(null);
+        addIdentity(other, "github", "gh-other-" + other);
+
+        // 这正是"先 GA 再做 M2b"的死局：分叉账号占着身份，本尊补绑不进来。
+        // 必须给出可辨识的 code，而不是 500。
+        assertThatThrownBy(() -> service.bind(other, "discord", "shared-discord-id", null, null))
+                .isInstanceOf(UserIdentityService.IdentityAlreadyBoundException.class)
+                .satisfies(e -> assertThat(
+                        ((UserIdentityService.IdentityAlreadyBoundException) e).errorCode()).isEqualTo("bind_taken"));
+    }
+
+    @Test
+    void bindRejectsSecondIdentityOfSameProvider() {
+        long userId = createUser(null);
+        addIdentity(userId, "github", "gh-" + userId);
+        addIdentity(userId, "discord", "dc-a-" + userId);
+
+        assertThatThrownBy(() -> service.bind(userId, "discord", "dc-b-" + userId, null, null))
+                .isInstanceOf(UserIdentityService.IdentityAlreadyBoundException.class)
+                .satisfies(e -> assertThat(
+                        ((UserIdentityService.IdentityAlreadyBoundException) e).errorCode()).isEqualTo("bind_duplicate"));
+    }
+
+    @Test
+    void rebindingOwnIdentityIsReportedDistinctly() {
+        long userId = createUser(null);
+        addIdentity(userId, "github", "gh-" + userId);
+        addIdentity(userId, "discord", "dc-" + userId);
+
+        assertThatThrownBy(() -> service.bind(userId, "discord", "dc-" + userId, null, null))
+                .isInstanceOf(UserIdentityService.IdentityAlreadyBoundException.class)
+                .satisfies(e -> assertThat(
+                        ((UserIdentityService.IdentityAlreadyBoundException) e).errorCode())
+                        .isEqualTo("bind_already_yours"));
+    }
+
+    @Test
+    void bindingGithubBackfillsGithubIdColumn() {
+        // 与 unbind 清空 github_id 对称：贡献归属和 /u/{githubId} 都依赖这列
+        long userId = createUser(null);
+        addIdentity(userId, "discord", "dc-" + userId);
+
+        service.bind(userId, "github", "114514", "a@e.com", "Nick");
+
+        assertThat(jdbc.queryForObject(
+                "SELECT github_id FROM user_accounts WHERE id = ?", Long.class, userId)).isEqualTo(114514L);
+    }
+
+    @Test
+    void bindReportsTakenWhenGithubIdColumnHeldByAnotherAccountAndRollsBack() {
+        // 老账号占着 github_id=777 但没有身份行（M0 回填前的窗口），预检看不见它
+        createUser(777L);
+        long userId = createUser(null);
+        addIdentity(userId, "discord", "dc-" + userId);
+
+        assertThatThrownBy(() -> service.bind(userId, "github", "777", null, null))
+                .isInstanceOf(UserIdentityService.IdentityAlreadyBoundException.class)
+                .satisfies(e -> assertThat(
+                        ((UserIdentityService.IdentityAlreadyBoundException) e).errorCode()).isEqualTo("bind_taken"));
+        // 身份行随事务回滚，不留半绑定状态
+        assertThat(service.listForUser(userId)).extracting("provider").containsExactly("discord");
+    }
+
+    @Test
+    void bindRaceOnIdentityInsertIsReportedAsTakenNot500() {
+        // 两个账号并发绑同一身份：都过了预检，后到的 insert 撞 UNIQUE(provider, provider_user_id)
+        var repo = org.mockito.Mockito.mock(
+                com.involutionhell.backend.usercenter.repository.UserIdentityRepository.class);
+        org.mockito.Mockito.when(repo.insert(org.mockito.ArgumentMatchers.any()))
+                .thenThrow(new org.springframework.dao.DuplicateKeyException("uq_provider_user"));
+        var raced = new UserIdentityService(repo, org.mockito.Mockito.mock(
+                com.involutionhell.backend.usercenter.repository.UserAccountRepository.class));
+
+        assertThatThrownBy(() -> raced.bind(1L, "discord", "dc-race", null, null))
+                .isInstanceOf(UserIdentityService.IdentityAlreadyBoundException.class)
+                .satisfies(e -> assertThat(
+                        ((UserIdentityService.IdentityAlreadyBoundException) e).errorCode()).isEqualTo("bind_taken"));
+    }
 }

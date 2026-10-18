@@ -133,6 +133,39 @@ class SharedLinkInternalControllerIntegrationTests extends AbstractWebIntegratio
                 .andExpect(jsonPath("$.message").value("url is required"));
     }
 
+    // ── 只认本机直连（INV-013）──────────────────────────────────────────────
+    // 经 Caddy / Vercel rewrite 转来的请求都带 X-Forwarded-For；key 正确也当接口不存在
+
+    @Test
+    @DisplayName("POST /internal 带 X-Forwarded-For → 404，key 对也不行，不落库")
+    void submit_viaProxy_returns404() throws Exception {
+        String url = "https://arxiv.org/abs/2610.10900";
+        mockMvc.perform(post("/api/community/links/internal")
+                        .header(KEY_HEADER, KEY)
+                        .header("X-Forwarded-For", "203.0.113.7")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"url\":\"" + url + "\"}"))
+                .andExpect(status().isNotFound());
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM shared_links WHERE url = ?", Integer.class, url))
+                .isZero();
+    }
+
+    @Test
+    @DisplayName("GET /internal/summary 与 /internal/{id} 带 X-Forwarded-For → 404")
+    void readEndpoints_viaProxy_return404() throws Exception {
+        mockMvc.perform(get("/api/community/links/internal/summary")
+                        .header(KEY_HEADER, KEY).header("X-Forwarded-For", "203.0.113.7"))
+                .andExpect(status().isNotFound());
+        String url = "https://arxiv.org/abs/2610.10901";
+        Integer id = com.jayway.jsonpath.JsonPath.read(submitAs(url, null).andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString(), "$.data.id");
+        mockMvc.perform(get("/api/community/links/internal/" + id)
+                        .header(KEY_HEADER, KEY).header("X-Forwarded-For", "203.0.113.7"))
+                .andExpect(status().isNotFound());
+        mockMvc.perform(get("/api/community/links/internal/" + id).header(KEY_HEADER, KEY))
+                .andExpect(status().isOk());
+    }
+
     // ── 分享人归属（discordUserId）──────────────────────────────────────────
     // H2 库在整个测试进程内共享，用户名 / Discord id / URL 都取本类专用的值，避免撞别的测试
 

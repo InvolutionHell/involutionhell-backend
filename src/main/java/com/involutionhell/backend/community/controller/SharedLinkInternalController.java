@@ -28,8 +28,10 @@ import java.security.MessageDigest;
  * 机器人桥接渠道的提交接口。
  *
  * 设计目标：
- * - ChatBot 走 127.0.0.1:8080 直连；但 api.involutionhell.com 的 Caddy 兜底和前端
- *   /api/community/links/:path* rewrite 都会转发到这里，公网可达，唯一的门是下面的 key
+ * - 只给本机直连：ChatBot 走 127.0.0.1:8080，不带 X-Forwarded-For。api.involutionhell.com
+ *   的 Caddy 兜底和前端 /api/community/links/:path* rewrite 也会把请求转到这里，但都会加
+ *   X-Forwarded-For——带这个头的一律 404，当这组接口不存在（INV-013）。Spring 没配
+ *   forward-headers-strategy，这个头原样到得了 controller。
  * - 仅接受带正确 X-Internal-Key 的请求，密钥通过 env INTERNAL_API_KEY 注入。
  *   持 key 者能指定 discordUserId，即决定链接挂在哪个已绑定 Discord 的账号名下
  * - 用 SharedLinkService.submitInternal，跳过 24h 限频；分享人 Discord 已绑定站内账号时
@@ -56,16 +58,22 @@ public class SharedLinkInternalController {
     }
 
     /**
-     * 统一校验 X-Internal-Key header。
+     * 统一校验来源与 X-Internal-Key header。
      *
      * 返回：
      *   - null：校验通过
-     *   - 非 null：直接 return 这个 response（503 未配置 / 403 缺失或错误）
+     *   - 非 null：直接 return 这个 response（404 经过代理 / 503 未配置 / 403 缺失或错误）
      *
+     * 代理检查排最前：从公网来的请求连"接口配没配"都不该看出来，key 再对也不行——
+     * key 一旦泄漏（日志、ChatBot 配置），公网可达就等于谁都能以任意 Discord 身份投稿。
      * 密钥比较用 {@link MessageDigest#isEqual} 走常量时间，避免 timing side-channel
      * 泄漏密钥前缀（即便 loopback 上威胁很低，代价为零就顺手做）。
      */
-    private ResponseEntity<ApiResponse<Object>> checkKey(String providedKey) {
+    private ResponseEntity<ApiResponse<Object>> checkKey(String providedKey, String forwardedFor) {
+        if (forwardedFor != null) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(new ApiResponse<>(false, "not found", null));
+        }
         if (expectedKey == null || expectedKey.isBlank()) {
             log.error("internal.api-key 未配置，拒绝请求");
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
@@ -99,9 +107,10 @@ public class SharedLinkInternalController {
     @PostMapping
     public ResponseEntity<ApiResponse<SharedLinkView>> submit(
             @RequestHeader(value = "X-Internal-Key", required = false) String providedKey,
+            @RequestHeader(value = "X-Forwarded-For", required = false) String forwardedFor,
             @RequestBody InternalShareRequest req) {
 
-        ResponseEntity<ApiResponse<Object>> authFail = checkKey(providedKey);
+        ResponseEntity<ApiResponse<Object>> authFail = checkKey(providedKey, forwardedFor);
         if (authFail != null) return cast(authFail);
 
         if (req == null || req.url() == null || req.url().trim().isEmpty()) {
@@ -144,9 +153,10 @@ public class SharedLinkInternalController {
     @GetMapping("/summary")
     public ResponseEntity<ApiResponse<AdminSummary>> summary(
             @RequestHeader(value = "X-Internal-Key", required = false) String providedKey,
+            @RequestHeader(value = "X-Forwarded-For", required = false) String forwardedFor,
             @RequestParam(value = "sampleLimit", defaultValue = "5") int sampleLimit) {
 
-        ResponseEntity<ApiResponse<Object>> authFail = checkKey(providedKey);
+        ResponseEntity<ApiResponse<Object>> authFail = checkKey(providedKey, forwardedFor);
         if (authFail != null) return cast(authFail);
 
         int safeSample = Math.max(0, Math.min(sampleLimit, 20));
@@ -165,9 +175,10 @@ public class SharedLinkInternalController {
     @GetMapping("/{id}")
     public ResponseEntity<ApiResponse<SharedLinkView>> getById(
             @RequestHeader(value = "X-Internal-Key", required = false) String providedKey,
+            @RequestHeader(value = "X-Forwarded-For", required = false) String forwardedFor,
             @PathVariable Long id) {
 
-        ResponseEntity<ApiResponse<Object>> authFail = checkKey(providedKey);
+        ResponseEntity<ApiResponse<Object>> authFail = checkKey(providedKey, forwardedFor);
         if (authFail != null) return cast(authFail);
 
         return service.findById(id)

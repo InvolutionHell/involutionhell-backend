@@ -22,9 +22,12 @@ import org.springframework.web.bind.annotation.RestController;
 public class IdentityController {
 
     private final UserIdentityService userIdentityService;
+    private final com.involutionhell.backend.usercenter.oauth.AuthProviderRegistry providers;
 
-    public IdentityController(UserIdentityService userIdentityService) {
+    public IdentityController(UserIdentityService userIdentityService,
+                              com.involutionhell.backend.usercenter.oauth.AuthProviderRegistry providers) {
         this.userIdentityService = userIdentityService;
+        this.providers = providers;
     }
 
     /** 列出当前用户已绑定的登录身份。 */
@@ -32,6 +35,16 @@ public class IdentityController {
     @GetMapping
     public ApiResponse<List<LinkedIdentityView>> list() {
         return ApiResponse.ok(userIdentityService.listForUser(StpUtil.getLoginIdAsLong()));
+    }
+
+    /**
+     * 后端已注册的全部登录方式。前端据此渲染"连接"按钮——接入新 provider 时
+     * 按钮会自动出现，不需要改前端的写死列表（少一处维护漂移）。
+     */
+    @SaCheckLogin
+    @GetMapping("/providers")
+    public ApiResponse<List<String>> supportedProviders() {
+        return ApiResponse.ok(providers.keys().stream().sorted().toList());
     }
 
     /** 解绑指定 provider。返回解绑后剩余身份列表。 */

@@ -84,7 +84,7 @@ cp .env.example .env
 
 ```bash
 # 启动 PostgreSQL 18
-# 此操作会自动创建 Schema 并初始化种子数据 (一致性与 NEON 保持同步)
+# 此操作会自动创建 Schema 并初始化本地种子账号（只在本地库首次建卷时写入，生产不会有）
 docker compose up -d postgres
 ```
 
@@ -107,12 +107,12 @@ docker compose up -d postgres
 
 注册步骤：
 1. 打开 [GitHub Settings → Developer settings → OAuth Apps](https://github.com/settings/developers) → **New OAuth App**
-2. **Authorization callback URL** 必须填 `http://localhost:3010/api/auth/callback/github`（端口跟前端 dev 一致；后端会拼 `${AUTH_URL}/api/auth/callback/github`，两边要对齐）
+2. **Authorization callback URL** 必须填 `http://localhost:3000/api/auth/callback/github`（端口跟前端 dev 一致；后端会拼 `${AUTH_URL}/api/auth/callback/github`，两边要对齐）
 3. 创建后把 Client ID 和（点 Generate 出来的）Client Secret 填到 `.env`：
    ```
    AUTH_GITHUB_ID=Ov23li...
    AUTH_GITHUB_SECRET=xxxx
-   AUTH_URL=http://localhost:3010
+   AUTH_URL=http://localhost:3000
    ```
 
 > [!TIP]
@@ -123,14 +123,14 @@ docker compose up -d postgres
 同 GitHub，每个开发者用自己的 Discord App：
 
 1. [Discord Developer Portal](https://discord.com/developers/applications) → **New Application**
-2. **OAuth2 → Redirects** 加 `http://localhost:3010/api/auth/callback/discord`（与 `${AUTH_URL}/api/auth/callback/discord` 对齐）
+2. **OAuth2 → Redirects** 加 `http://localhost:3000/api/auth/callback/discord`（与 `${AUTH_URL}/api/auth/callback/discord` 对齐）
 3. OAuth2 → 复制 **Client ID** 和 **Client Secret**，填到 `.env`：
    ```
    AUTH_DISCORD_ID=...
    AUTH_DISCORD_SECRET=...
    ```
 
-不填就不显示 Discord 登录、后端也不报错（`/oauth/render/discord` 会重定向到 `?error=oauth_provider`）。scope 由后端固定为 `identify email`，无需在 Portal 额外设置。
+不填后端也不报错，但登录页的 Discord 按钮照样显示，点了会回到 `/login?error=oauth_provider`（`/oauth/render/discord` 判定未配置）。scope 由后端固定为 `identify email`，无需在 Portal 额外设置。
 
 ### 4. 启动后端服务
 按以下任一方式启动:
@@ -166,7 +166,8 @@ Get-Content .env | Where-Object { $_ -match '^[^#].+=' } | ForEach-Object {
 默认接口入口：`http://127.0.0.1:8080`
 
 ### 5. 调用示例接口
-内置种子账号：
+本地种子账号（来自 `docker/init-db/init.sql`，只存在于本地 docker 库和测试库；
+生产跑的 `schema.sql` 不 seed 任何可登录账号，见 SECURITY.md INV-011）：
 - `admin / Admin@123456`
 - `alice / Alice@123456`
 

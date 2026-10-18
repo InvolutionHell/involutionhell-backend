@@ -12,6 +12,7 @@ import java.util.Optional;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.BindException;
+import org.springframework.web.ErrorResponse;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -130,6 +131,12 @@ public class GlobalExceptionHandler {
      */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiResponse<Void>> handleUnexpected(Exception exception) {
+        // Spring MVC 自己判定的 4xx（方法不允许 / 路由不存在 / 缺参数……）保留原状态码，
+        // 否则全被兜成 500，客户端分不清"调错了"和"服务器坏了"
+        if (exception instanceof ErrorResponse framework) {
+            return ResponseEntity.status(framework.getStatusCode())
+                    .body(ApiResponse.fail(framework.getBody().getDetail()));
+        }
         // 走 SLF4J 统一进日志管道（含 trace id / 采集到 Loki 等），不再用 printStackTrace 污染 stdout
         log.error("未处理的异常", exception);
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
