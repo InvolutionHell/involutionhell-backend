@@ -14,14 +14,18 @@ documents:
   endpoints:
     - GET /oauth/render/{provider}
     - GET /api/auth/callback/{provider}
-    - POST /api/auth/link/{provider}/start
-    - POST /api/auth/link/{provider}/confirm
+    - POST /oauth/bind/{provider}
+    - GET /auth/register/pending
+    - POST /auth/register/send-otp
+    - POST /auth/register/verify
   symbols:
     - src/main/resources/schema.sql (user_identities 表 DDL + 回填)
     - src/main/java/com/involutionhell/backend/usercenter/model/UserIdentity.java
     - src/main/java/com/involutionhell/backend/usercenter/repository/UserIdentityRepository.java
-    - src/main/java/com/involutionhell/backend/usercenter/service/AuthService.java (loginByGithub → M1 loginByProvider)
-    - src/main/java/com/involutionhell/backend/usercenter/controller/OAuthController.java (render/callback)
+    - src/main/java/com/involutionhell/backend/usercenter/service/AuthService.java (loginByProvider / completeRegistration)
+    - src/main/java/com/involutionhell/backend/usercenter/service/RegistrationService.java (注册 OTP)
+    - src/main/java/com/involutionhell/backend/usercenter/controller/OAuthController.java (render/bind/callback)
+    - src/main/java/com/involutionhell/backend/usercenter/controller/AuthController.java (/auth/register/*)
 ---
 
 # ADR-001：多 Provider 身份体系与 OAuth state 防护
@@ -66,22 +70,22 @@ state 里的用户身份**（登记为安全不变量 INV-007，随 M1 落进 Se
 INV-006 已被"付费 LLM 端点限流"占用，编号按 SECURITY.md 流水规则永不复用）。
 真实信息挂在服务端 intent 记录上（nonce 为 key，Caffeine 存储，5 分钟 TTL）。
 
-- **登录**（无会话）：`/oauth/render/{provider}` 生成 nonce → 存 intent{mode=login} →
-  种 `oauth_flow=<nonce>` cookie（httpOnly + **SameSite=Lax**，Strict 会把跨站顶级
+- **登录**（无会话）：`/oauth/render/{provider}` 生成 nonce →
+  种 `ih_oauth_state=<nonce>` cookie（httpOnly + **SameSite=Lax**，Strict 会把跨站顶级
   导航的 cookie 剥掉）→ 跳 provider。callback 核对 URL state == cookie nonce，
   防登录 CSRF：攻击者无法向受害者浏览器种自己的 cookie。
-- **绑定**（已登录，从设置页发起）：satoken 在 localStorage，callback（provider 发起的
-  顶级 GET）拿不到会话，所以把"你是谁"提前到发起时捕获——
-  1. `POST /api/auth/link/{provider}/start`（fetch 带 satoken，可认证）→ 服务端记
-     intent{mode=bind, userId=当前会话} → 种 cookie → 返回授权链接；
-  2. callback 核对 state==cookie，把 provider 身份暂存进 intent，跳回
-     `settings?link_confirm=<nonce>`；
-  3. 前端确认页 → `POST .../confirm`（再带 satoken）→ 服务端二次核对
-     当前会话 == intent.userId → 插入 identity。
+- **绑定**（已登录，从设置页发起）：把"你是谁"提前到发起时捕获——
+  1. `POST /oauth/bind/{provider}`（fetch 带 satoken，`@SaCheckLogin`）→ 服务端以 state 为 key
+     记 intent{userId=当前会话}（内存，5 分钟、一次性）→ 种 `ih_oauth_state` + `ih_oauth_bind`
+     标记 cookie → 返回 `{url}`，前端跳转。**不用 GET**：GET 能被跨站顶级导航触发，配合被种进
+     浏览器的别人的 satoken cookie 就是绑定劫持。
+  2. callback 核对 state==cookie，取回 intent，二次核对当前会话 == intent.userId → 直接插入
+     identity（没有单独的确认页）。intent 丢了但标记还在 → 回设置页报错，绝不落进登录分支。
   绑定劫持（攻击者发起流程诱导受害者授权）被 cookie 那关挡住：受害者浏览器没有
-  攻击者的 `oauth_flow` cookie。
-- 绑定回跳契约：`settings?linked={provider}` / `?link_error=identity_taken`（撞
-  UNIQUE 是必然出现的用户可见错误，不混进 oauth_failed）。
+  攻击者的 state cookie。
+- 绑定回跳契约：`/settings?bind=ok` / `?bind_error=<code>`（`bind_taken` / `bind_duplicate` /
+  `bind_already_yours` / `bind_session` / `oauth_*`；撞 UNIQUE 是必然出现的用户可见错误，
+  不混进 oauth_failed）。
 
 ## 其他已定结论
 
@@ -98,20 +102,21 @@ INV-006 已被"付费 LLM 端点限流"占用，编号按 SECURITY.md 流水规�
   登录方式"的判定中，不可用密码不算登录方式，否则 OAuth 用户解绑唯一身份后永久锁死。
 - **新用户 username 生成**：provider login 转 slug + 冲突短随机后缀；**禁纯数字**
   （撞 `/u/` 路由"纯数字=github_id"的解析约定）、禁 provider 前缀。存量
-  `github_<id>` 用户名永不强迁。
-- **资料刷新只填空缺字段**：多 provider 下 last-login-wins 会互相覆盖头像、
-  用未验证邮箱覆盖 email。
+  `github_<id>` 用户名永不强迁。（现状：slug 方案未做，仍是 `{provider}_{id}`，
+  被已解绑该身份的老账号占着时加 6 位随机后缀。）
 - **邮箱关联只信"provider 已验证"的邮箱**。第三方登录时 identity 查不到，若
   provider 的**已验证**邮箱唯一匹配到已有账号 → 自动挂靠（防分叉，主路径，见
-  `AuthService.autoLinkByVerifiedEmailOrCreate`）。**禁止用未验证邮箱合并**——
+  `AuthService.autoLinkByVerifiedEmail`）。**禁止用未验证邮箱合并**——
   攻击者拿受害者邮箱注册的第三方号无法把邮箱标 verified（要点验证链接=控制邮箱），
-  所以已验证邮箱自动关联不增加攻击面（Auth0/Keycloak 同款）。多个匹配时保守建新号。
-- **规范邮箱（用户自有 OTP）** 是后续独立子系统：注册时用我们自己的验证码验一次邮箱，
-  使 email 成为账号的规范已验证身份，覆盖"provider 没给邮箱/未验证"的情况。
-  **前置**：需要事务邮件服务 + `noreply@involutionhell.com` 发信域名——不能用
-  ChatBot 那个个人 Gmail（额度/投递率/隐私都不行）。待发信基础设施定了再做。
-- **资料刷新只填空缺字段**：多 provider 下 last-login-wins 会互相覆盖头像、
-  用未验证邮箱覆盖 email。自动关联挂靠时**不覆盖**已有账号资料。
+  所以已验证邮箱自动关联不增加攻击面（Auth0/Keycloak 同款）。前提是锚点
+  `user_accounts.email` 本身只来自已验证来源（INV-012）。多个匹配、或目标账号已有
+  同家身份时不挂靠，进 OTP 注册。
+- **规范邮箱（用户自有 OTP）**：任何 provider 的新账号都先用我们自己的验证码验一次邮箱
+  （Resend，`noreply@involutionhell.com`），验过的邮箱才写进账号，覆盖"provider 没给邮箱/
+  未验证"的情况。验证出的邮箱已属于已有账号 → 409，不合并，让用户登录原账号后走 M2b 绑定。
+- **资料刷新**：email / github_id 只补空缺字段，email 只收已验证来源（未验证邮箱覆盖锚点
+  就是接管入口）；展示名/头像在账号的原始 provider（用户名前缀）登录时刷新，别家登录只补空——
+  多 provider 下 last-login-wins 会互相覆盖。自动关联挂靠时**不覆盖**已有账号资料。
 
 ## 迁移阶段
 
@@ -123,7 +128,8 @@ INV-006 已被"付费 LLM 端点限流"占用，编号按 SECURITY.md 流水规�
 | 防分叉 | 已验证邮箱自动关联（登录时挂靠而非分叉） | ✅ 本 PR |
 | M3 后端 | Discord provider（自定义 AuthSource）+ OAuth 端点泛化为 {provider} | ✅ #48 |
 | M3 前端 | 登录页 Discord 按钮 + 设置页身份 UI | ✅ #382/#383 |
-| OTP 注册 | 自有验证码验邮箱→规范身份（**待事务邮件基础设施**） | 待做 |
+| OTP 注册 | 自有验证码验邮箱→规范身份；新账号只经 `completeRegistration` 建（INV-012） | ✅ #57（2026-10-18） |
 | M2b 绑定 | 设置页"连接新 provider"（可选，次要路径） | ✅ #57 |
 | 登录主查翻转 | `loginByProvider` 改 identity-first：先查 `user_identities`，miss 才回退 username → 已验证邮箱挂靠 → 建号；`updateProfile` 只补空列（不覆盖、不写 NULL、非 github 不写 `github_id`）。**必须与 M2b 同时或更早上线**：绑定后身份所属账号的用户名不再是 `{provider}_{id}`，username 主查会 miss → 邮箱不同即分叉，GitHub 则撞 `UNIQUE(github_id)` | ✅ #57 |
-| M4 | identities 稳定一个版本后删 `github_id` 列（单独拆期，保回滚路径） | 待做 |
+| Discord GA | OTP 注册上线后清空 `AUTH_DISCORD_ALLOWLIST`；闸保留一个版本作回滚开关（INV-008） | ✅ 2026-10-18 |
+| M4 | identities 稳定一个版本后删 `github_id` 列（单独拆期，保回滚路径） | 待做（等一个稳定版本） |
