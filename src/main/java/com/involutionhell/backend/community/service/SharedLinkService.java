@@ -40,7 +40,7 @@ public class SharedLinkService {
 
     private static final Logger log = LoggerFactory.getLogger(SharedLinkService.class);
 
-    /** 每用户每 24h 最多提交 N 条。滚动时间窗，不是自然日。 */
+    /** 每用户每 24h 最多从网页提交 N 条（机器人渠道不计）。滚动时间窗，不是自然日。 */
     static final int DAILY_SUBMIT_LIMIT = 5;
 
     /** 3 条独立举报自动下架。 */
