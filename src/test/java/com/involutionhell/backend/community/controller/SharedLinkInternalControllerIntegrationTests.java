@@ -1,12 +1,18 @@
 package com.involutionhell.backend.community.controller;
 
+import com.involutionhell.backend.community.service.SharedLinkService;
 import com.involutionhell.backend.support.AbstractWebIntegrationTest;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.web.servlet.ResultActions;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -125,6 +131,118 @@ class SharedLinkInternalControllerIntegrationTests extends AbstractWebIntegratio
                         .content("{\"submitterLabel\":\"x\"}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.message").value("url is required"));
+    }
+
+    // ── 分享人归属（discordUserId）──────────────────────────────────────────
+    // H2 库在整个测试进程内共享，用户名 / Discord id / URL 都取本类专用的值，避免撞别的测试
+
+    @Autowired
+    private JdbcTemplate jdbc;
+
+    @Autowired
+    private SharedLinkService sharedLinkService;
+
+    /** 别的测试会数用户总数，建的用户必须删掉（身份、链接随 FK 级联） */
+    @AfterEach
+    void cleanUpAttributionFixtures() {
+        jdbc.update("DELETE FROM shared_links WHERE url LIKE 'https://arxiv.org/abs/2610.%'");
+        jdbc.update("DELETE FROM user_accounts WHERE username LIKE 'share-attr-%'");
+    }
+
+    private long createUser(String username, boolean enabled) {
+        jdbc.update("INSERT INTO user_accounts (username, password_hash, display_name, enabled, roles, permissions) "
+                + "VALUES (?, '!', ?, ?, 'user', '')", username, username, enabled);
+        return jdbc.queryForObject("SELECT id FROM user_accounts WHERE username = ?", Long.class, username);
+    }
+
+    private void linkDiscord(long userId, String discordUserId) {
+        jdbc.update("INSERT INTO user_identities (user_id, provider, provider_user_id) VALUES (?, 'discord', ?)",
+                userId, discordUserId);
+    }
+
+    private long bridgeId() {
+        return jdbc.queryForObject("SELECT id FROM user_accounts WHERE username = 'discord-bridge'", Long.class);
+    }
+
+    private String storedDiscordUserId(String url) {
+        return jdbc.queryForObject("SELECT discord_user_id FROM shared_links WHERE url = ?", String.class, url);
+    }
+
+    private ResultActions submitAs(String url, String discordUserId) throws Exception {
+        String idField = discordUserId == null ? "" : ",\"discordUserId\":\"" + discordUserId + "\"";
+        return mockMvc.perform(post("/api/community/links/internal")
+                .header(KEY_HEADER, KEY)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"url\":\"" + url + "\",\"submitterLabel\":\"someone\"" + idField + "}"));
+    }
+
+    @Test
+    @DisplayName("已绑定 Discord 的分享人 → 链接记到本人名下，Discord id 落库")
+    void submit_linkedDiscord_attributesToAccount() throws Exception {
+        long userId = createUser("share-attr-linked", true);
+        linkDiscord(userId, "900000000000000001");
+        String url = "https://arxiv.org/abs/2610.10001";
+
+        submitAs(url, "900000000000000001")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.submitterId").value(userId))
+                .andExpect(jsonPath("$.data.recommendation").value("来自 Discord @someone"));
+        assertThat(storedDiscordUserId(url)).isEqualTo("900000000000000001");
+    }
+
+    @Test
+    @DisplayName("Discord id 没绑定任何账号 → 挂 discord-bridge，但 id 照样落库")
+    void submit_unlinkedDiscord_fallsBackToBridgeAndKeepsId() throws Exception {
+        String url = "https://arxiv.org/abs/2610.10002";
+        submitAs(url, "900000000000000002")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.submitterId").value(bridgeId()));
+        assertThat(storedDiscordUserId(url)).isEqualTo("900000000000000002");
+    }
+
+    @Test
+    @DisplayName("绑定的账号已禁用 → 挂 discord-bridge")
+    void submit_disabledAccount_fallsBackToBridge() throws Exception {
+        long userId = createUser("share-attr-disabled", false);
+        linkDiscord(userId, "900000000000000003");
+        submitAs("https://arxiv.org/abs/2610.10003", "900000000000000003")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.submitterId").value(bridgeId()));
+    }
+
+    @Test
+    @DisplayName("不传 discordUserId（如 MCP 渠道）→ 挂 discord-bridge，id 为空")
+    void submit_withoutDiscordId_staysOnBridge() throws Exception {
+        String url = "https://arxiv.org/abs/2610.10004";
+        submitAs(url, null)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.submitterId").value(bridgeId()));
+        assertThat(storedDiscordUserId(url)).isNull();
+    }
+
+    @Test
+    @DisplayName("discordUserId 不是纯数字 → 400，不落库")
+    void submit_invalidDiscordId_returns400() throws Exception {
+        String url = "https://arxiv.org/abs/2610.10005";
+        submitAs(url, "12ab")
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("invalid discordUserId"));
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM shared_links WHERE url = ?", Integer.class, url))
+                .isZero();
+    }
+
+    @Test
+    @DisplayName("在 Discord 里分享的条数不占网页提交的每日配额")
+    void bridgeShares_doNotCountTowardWebDailyLimit() throws Exception {
+        long userId = createUser("share-attr-quota", true);
+        linkDiscord(userId, "900000000000000006");
+        for (int i = 0; i < 6; i++) {
+            submitAs("https://arxiv.org/abs/2610.1010" + i, "900000000000000006")
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.submitterId").value(userId));
+        }
+        assertThat(sharedLinkService.submit(userId, "https://arxiv.org/abs/2610.10200", null).submitterId())
+                .isEqualTo(userId);
     }
 
     // ── summary 接口 ────────────────────────────────────────────────────────

@@ -35,8 +35,9 @@ ON CONFLICT (username) DO NOTHING;
 -- 双重禁用：
 --   1. password_hash='!' —— 非 sha256 合法十六进制，口令校验永远失败
 --   2. enabled=FALSE     —— 未来若有人重置密码 / 误改口令，enabled 仍挡住登录
--- 该账号仅被 SharedLinkService.submitInternal 取 submitter_id 用（FK 不 care enabled），
--- 真实提交人名放在 recommendation 里（"来自 Discord @xxx"）。
+-- 该账号仅被 SharedLinkService.submitInternal 取 submitter_id 用（FK 不 care enabled）：
+-- 分享人的 Discord 没绑定站内账号时挂到这里，Discord id 记在 shared_links.discord_user_id，
+-- 昵称放在 recommendation 里（"来自 Discord @xxx"）。
 --
 -- 注意：这里用 DO UPDATE 而非 DO NOTHING，是因为老版本 seed 落过 enabled=TRUE，
 -- 每次启动 reconcile 回 FALSE，可阻断历史遗留记录再次被误启用。
@@ -249,6 +250,7 @@ CREATE TABLE IF NOT EXISTS shared_links (
     admin_note      TEXT,                              -- 管理员人工审核备注（reject 原因 / approve 评语）
     probe_fail_count INT         NOT NULL DEFAULT 0,   -- M9 失效探活连续失败计数，>=2 → ARCHIVED
     probe_last_at   TIMESTAMPTZ,                       -- 最近一次 HEAD 探活时间，用于跳过刚跑过的
+    discord_user_id VARCHAR(32),                       -- 机器人渠道的分享人 Discord id；网页提交为 NULL
     created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
@@ -259,6 +261,10 @@ ALTER TABLE shared_links ADD COLUMN IF NOT EXISTS probe_last_at TIMESTAMPTZ;
 -- admin_note：管理员 approve/reject 时的备注（reject 原因、approve 评语等）
 -- 与 archived_reason 区分：后者是系统归档原因（link_dead 等），前者是人工审核原因
 ALTER TABLE shared_links ADD COLUMN IF NOT EXISTS admin_note TEXT;
+-- discord_user_id：机器人渠道记下分享人的 Discord id（昵称会改、会重名，id 不会）。
+-- 提交时已绑定 Discord 的账号直接记为 submitter；没绑定的仍挂 discord-bridge，
+-- 留着 id 以便日后对方绑定后按 id 改挂。
+ALTER TABLE shared_links ADD COLUMN IF NOT EXISTS discord_user_id VARCHAR(32);
 
 CREATE INDEX IF NOT EXISTS idx_shared_links_status_created ON shared_links(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_shared_links_category       ON shared_links(category) WHERE status = 'APPROVED';

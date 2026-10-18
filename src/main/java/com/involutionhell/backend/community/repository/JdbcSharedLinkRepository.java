@@ -59,7 +59,8 @@ public class JdbcSharedLinkRepository implements SharedLinkRepository {
             toInstant(rs.getTimestamp("archived_at")),
             rs.getString("archived_reason"),
             toInstant(rs.getTimestamp("created_at")),
-            toInstant(rs.getTimestamp("updated_at"))
+            toInstant(rs.getTimestamp("updated_at")),
+            rs.getString("discord_user_id")
     );
 
     @Override
@@ -68,8 +69,8 @@ public class JdbcSharedLinkRepository implements SharedLinkRepository {
         // flags 列 Postgres 侧是 JSONB，H2 测试侧是 VARCHAR。用 setObject(Types.OTHER) + JSON 字符串
         // 的方式让两种方言都能吃进去（与 JdbcEventRepository.speakers 的做法保持一致）。
         String sql = "INSERT INTO shared_links "
-                + "(submitter_id, url, url_hash, host, recommendation, status, flags) "
-                + "VALUES (?, ?, ?, ?, ?, ?, ?)";
+                + "(submitter_id, url, url_hash, host, recommendation, status, flags, discord_user_id) "
+                + "VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
         jdbc.update(conn -> {
             PreparedStatement ps = conn.prepareStatement(sql, new String[]{"id"});
             ps.setLong(1, draft.submitterId());
@@ -80,6 +81,7 @@ public class JdbcSharedLinkRepository implements SharedLinkRepository {
             else ps.setString(5, draft.recommendation());
             ps.setString(6, draft.status() != null ? draft.status() : SharedLinkStatus.PENDING);
             ps.setObject(7, serializeFlags(draft.flags()), Types.OTHER);
+            ps.setString(8, draft.discordUserId());
             return ps;
         }, kh);
         Long id = kh.getKey() != null ? kh.getKey().longValue() : null;
@@ -203,8 +205,10 @@ public class JdbcSharedLinkRepository implements SharedLinkRepository {
 
     @Override
     public int countBySubmitterSince(Long submitterId, Instant since) {
+        // 只数网页提交：机器人渠道本身不限频，已绑定 Discord 的人在群里分享不该占网页配额
         Integer n = jdbc.queryForObject(
-                "SELECT COUNT(*) FROM shared_links WHERE submitter_id = ? AND created_at >= ?",
+                "SELECT COUNT(*) FROM shared_links WHERE submitter_id = ? AND created_at >= ? "
+                        + "AND discord_user_id IS NULL",
                 Integer.class, submitterId, Timestamp.from(since));
         return n != null ? n : 0;
     }

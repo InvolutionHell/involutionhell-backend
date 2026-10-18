@@ -28,9 +28,12 @@ import java.security.MessageDigest;
  * 机器人桥接渠道的提交接口。
  *
  * 设计目标：
- * - 部署在 127.0.0.1:8080，不走 Caddy（Caddyfile 不代理 /internal 路径）
- * - 仅接受带正确 X-Internal-Key 的请求，密钥通过 env INTERNAL_API_KEY 注入
- * - 用 SharedLinkService.submitInternal，跳过 24h 限频，固定挂到 discord-bridge 系统账号
+ * - ChatBot 走 127.0.0.1:8080 直连；但 api.involutionhell.com 的 Caddy 兜底和前端
+ *   /api/community/links/:path* rewrite 都会转发到这里，公网可达，唯一的门是下面的 key
+ * - 仅接受带正确 X-Internal-Key 的请求，密钥通过 env INTERNAL_API_KEY 注入。
+ *   持 key 者能指定 discordUserId，即决定链接挂在哪个已绑定 Discord 的账号名下
+ * - 用 SharedLinkService.submitInternal，跳过 24h 限频；分享人 Discord 已绑定站内账号时
+ *   记到本人名下，否则挂 discord-bridge 系统账号
  *
  * 路径选 /api/community/links/internal 而非独立 /internal/... 是为了：
  * - 沿用已有 SharedLinkController 的业务命名，读代码更顺手
@@ -105,10 +108,17 @@ public class SharedLinkInternalController {
             return ResponseEntity.badRequest()
                     .body(new ApiResponse<>(false, "url is required", null));
         }
+        // Discord 用户 id 是 snowflake（纯数字，最长 20 位）；不传或空串按没有处理
+        String discordUserId = req.discordUserId() == null || req.discordUserId().isBlank()
+                ? null : req.discordUserId().trim();
+        if (discordUserId != null && !discordUserId.matches("\\d{1,20}")) {
+            return ResponseEntity.badRequest()
+                    .body(new ApiResponse<>(false, "invalid discordUserId", null));
+        }
 
         try {
             SharedLink saved = service.submitInternal(
-                    req.submitterLabel(), req.url(), req.recommendation());
+                    req.submitterLabel(), req.url(), req.recommendation(), discordUserId);
             return ResponseEntity.ok(ApiResponse.ok(SharedLinkView.from(saved)));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest()
