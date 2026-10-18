@@ -11,6 +11,7 @@ public record PendingRegistration(
         String displayName,
         String avatarUrl,
         String providerEmail,   // provider 给的邮箱（预填用），用户可在验证步改成别的
-        Long githubId
+        Long githubId,
+        boolean providerEmailVerified // provider 已验证 providerEmail：发到这个地址的人就是邮箱主人，免按邮箱的全局限额
 ) {
 }

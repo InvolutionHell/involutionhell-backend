@@ -28,8 +28,13 @@ import org.springframework.stereotype.Service;
  *   - verifyAttempts 累积计在会话上、**不被重发重置**：整个会话至多 5 次校验尝试，
  *     6 位码的爆破面恒为 5/1e6，堵住"重发归零 attempts 无限爆破"。
  *   - 发信限流：会话内至多 5 封、两封间隔 ≥60s；跨会话每个（收件邮箱, 第三方身份）每天 5 封、
- *     每个收件邮箱每天 20 封、每个第三方身份每天 10 封，防邮件轰炸。先查完所有限额再一起占位，
- *     发信失败退还（没送达的不算数，也不留可猜的码）。第 5 次错码即作废会话。
+ *     每个收件邮箱每天 20 封、每个第三方身份每天 10 封，防邮件轰炸。先查完所有限额再一起占位；
+ *     发信失败只退还按邮箱计的两项（护住邮箱主人），身份那项是调用方自己的预算，不退。
+ *   - 码只在**送达之后**才生效：发信期间会话里没有可校验的码，失败的发信不留任何可猜的东西。
+ *   - 猜码总量按收件邮箱封顶：每个邮箱每天至多 10 次错码（跨会话、跨身份），到顶后对它的校验一律失败。
+ *     第 5 次错码即作废会话。
+ *   - 邮箱主人豁免按邮箱的两项全局限额：provider 已验证过的邮箱 == 发码邮箱，说明调用方本来就控制
+ *     这个收件箱，攻击者拿不到别人邮箱的"已验证"副本，豁免不给攻击者开口子。
  *   - 校验+消费在会话锁内原子完成，双击/并发只成功一次，杜绝重复建号。
  *   - 校验通过返回**本次实际验证通过的 email**（不是 provider 预填的未验证地址）。
  *
@@ -59,6 +64,10 @@ public class RegistrationService {
     private static final int MAX_SENDS_PER_EMAIL_IDENTITY_PER_DAY = 5;
     private static final int MAX_SENDS_PER_EMAIL_PER_DAY = 20;
     private static final int MAX_SENDS_PER_IDENTITY_PER_DAY = 10;
+    // 按收件邮箱的错码总量：封顶针对某个邮箱的猜码（10 / 1e6 每天），否则多开身份就能多猜，
+    // 猜中 = 用受害者邮箱建号，之后受害者首登会被已验证邮箱自动挂靠进去。
+    // ponytail: 代价是邮箱 provider 未验证的人可能被别人用错码锁一天（防接管优先于防锁死）。
+    private static final int MAX_VERIFY_FAILURES_PER_EMAIL_PER_DAY = 10;
     // 粗校验邮箱格式，挡住明显非法/注入型输入；真实有效性由"能收到码"证明。
     private static final Pattern EMAIL_RE = Pattern.compile("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$");
 
@@ -72,7 +81,7 @@ public class RegistrationService {
     private final Ticker ticker;
     private final boolean devConsoleOtp;
     private final Cache<String, RegSession> sessions;
-    private final Cache<String, AtomicInteger> dailySends;
+    private final Cache<String, AtomicInteger> dailyCounts;
 
     @org.springframework.beans.factory.annotation.Autowired
     public RegistrationService(
@@ -92,7 +101,7 @@ public class RegistrationService {
                 .expireAfterWrite(SESSION_TTL)
                 .maximumSize(10_000)
                 .build();
-        this.dailySends = Caffeine.newBuilder()
+        this.dailyCounts = Caffeine.newBuilder()
                 .ticker(ticker)
                 .expireAfterWrite(Duration.ofDays(1))
                 .maximumSize(100_000)
@@ -108,22 +117,26 @@ public class RegistrationService {
      * ponytail: 全局锁，临界区只是几次内存读写；发信量远到不了要分段锁的程度。
      */
     private boolean reserveDaily(List<DailyCap> caps) {
-        synchronized (dailySends) {
+        synchronized (dailyCounts) {
             for (DailyCap c : caps) {
-                AtomicInteger n = dailySends.getIfPresent(c.key());
-                if (n != null && n.get() >= c.cap()) {
+                if (dailyCount(c.key()) >= c.cap()) {
                     return false;
                 }
             }
-            caps.forEach(c -> dailySends.get(c.key(), k -> new AtomicInteger()).incrementAndGet());
+            caps.forEach(c -> dailyCounts.get(c.key(), k -> new AtomicInteger()).incrementAndGet());
             return true;
         }
     }
 
+    private int dailyCount(String key) {
+        AtomicInteger n = dailyCounts.getIfPresent(key);
+        return n == null ? 0 : n.get();
+    }
+
     private void refundDaily(List<DailyCap> caps) {
-        synchronized (dailySends) {
+        synchronized (dailyCounts) {
             caps.forEach(c -> {
-                AtomicInteger n = dailySends.getIfPresent(c.key());
+                AtomicInteger n = dailyCounts.getIfPresent(c.key());
                 if (n != null) {
                     n.decrementAndGet();
                 }
@@ -144,6 +157,16 @@ public class RegistrationService {
         RegSession(PendingRegistration reg) {
             this.reg = reg;
         }
+
+        /** provider 已验证的邮箱就是 target：调用方本来就控制这个收件箱。 */
+        boolean ownsEmail(String target) {
+            return reg.providerEmailVerified() && reg.providerEmail() != null
+                    && reg.providerEmail().trim().equalsIgnoreCase(target);
+        }
+    }
+
+    private static String emailKey(String email) {
+        return "email:" + email.toLowerCase(Locale.ROOT);
     }
 
     /** 建一个待注册会话，返回 pendingId。会话 15min 后自然过期（不被重发刷新）。 */
@@ -161,7 +184,7 @@ public class RegistrationService {
 
     /**
      * 给指定邮箱发 6 位验证码。限流：会话至多 {@value #MAX_SENDS} 封、间隔 ≥60s，加上跨会话日限额。
-     * 发信失败不计入任何限额（冷却照算，挡住对 Resend 的连发），且作废本次的码。
+     * 发信失败退还按邮箱计的限额（会话、身份两项照算，冷却照算），码只在送达后生效。
      * verifyAttempts 不在此重置。
      */
     public SendResult sendOtp(String pendingId, String email) {
@@ -173,14 +196,16 @@ public class RegistrationService {
         if (!EMAIL_RE.matcher(normalized).matches()) {
             return SendResult.INVALID_EMAIL;
         }
-        String emailKey = "email:" + normalized.toLowerCase(Locale.ROOT);
+        String emailKey = emailKey(normalized);
         String identityKey = "id:" + s.reg.provider() + ":" + s.reg.providerUserId();
-        List<DailyCap> caps = List.of(
-                new DailyCap(emailKey + "|" + identityKey, MAX_SENDS_PER_EMAIL_IDENTITY_PER_DAY),
-                new DailyCap(emailKey, MAX_SENDS_PER_EMAIL_PER_DAY),
-                new DailyCap(identityKey, MAX_SENDS_PER_IDENTITY_PER_DAY));
-        String code;
-        String to;
+        DailyCap pairCap = new DailyCap(emailKey + "|" + identityKey, MAX_SENDS_PER_EMAIL_IDENTITY_PER_DAY);
+        DailyCap emailCap = new DailyCap(emailKey, MAX_SENDS_PER_EMAIL_PER_DAY);
+        DailyCap identityCap = new DailyCap(identityKey, MAX_SENDS_PER_IDENTITY_PER_DAY);
+        boolean owner = s.ownsEmail(normalized);
+        List<DailyCap> caps = owner ? List.of(pairCap, identityCap) : List.of(pairCap, emailCap, identityCap);
+        // 失败只退按邮箱计的：它们护的是邮箱主人；身份那项是调用方自己的预算，退了就等于不限 Resend 调用
+        List<DailyCap> refundOnFailure = owner ? List.of(pairCap) : List.of(pairCap, emailCap);
+        String code = String.format(Locale.ROOT, "%06d", RANDOM.nextInt(1_000_000));
         synchronized (s) {
             long now = ticker.read();
             if (s.sends >= MAX_SENDS) {
@@ -192,13 +217,9 @@ public class RegistrationService {
             if (!reserveDaily(caps)) {
                 return SendResult.RATE_LIMITED;
             }
-            code = String.format(Locale.ROOT, "%06d", RANDOM.nextInt(1_000_000));
-            s.otpEmail = normalized;
-            s.otpCode = code;
-            s.otpExpiresAtNanos = now + OTP_TTL_NANOS;
             s.sends++;
             s.lastSendAtNanos = now;
-            to = normalized;
+            s.otpCode = null; // 旧码随重发作废；新码等送达后才挂上
         }
         // 开发兜底：验证码直接打到控制台，让贡献者不配 Resend 也能跑通完整注册流
         // （Django/Rails 的 console email backend 同款）。
@@ -209,23 +230,29 @@ public class RegistrationService {
         if (devConsoleOtp && !emailService.isConfigured()) {
             log.warn("[DEV-OTP] 控制台兜底（registration.otp.dev-console=true），未真实发信: pendingId={} code={}",
                     pendingId, code);
+            armCode(s, normalized, code);
             return SendResult.SENT;
         }
         String html = "<p>你的 InvolutionHell 注册验证码是：</p>"
                 + "<p style=\"font-size:24px;font-weight:bold;letter-spacing:4px\">" + code + "</p>"
                 + "<p>10 分钟内有效。如果不是你本人操作，忽略即可。</p>";
-        boolean sent = emailService.sendHtml(to, "InvolutionHell 注册验证码", html);
-        if (!sent) {
-            synchronized (s) {
-                s.otpCode = null; // 没送达的码不能留在会话里被猜
-                s.sends--;
-            }
-            refundDaily(caps);
+        if (!emailService.sendHtml(normalized, "InvolutionHell 注册验证码", html)) {
+            refundDaily(refundOnFailure);
             // 不落收件邮箱（PII），也不落 pendingId（它是注册会话的唯一凭据）
             log.warn("OTP 发信失败 provider={}", s.reg.provider());
             return SendResult.SEND_FAILED;
         }
+        armCode(s, normalized, code);
         return SendResult.SENT;
+    }
+
+    /** 送达后才让码可校验：发信途中、发信失败都没有可猜的码。 */
+    private void armCode(RegSession s, String email, String code) {
+        synchronized (s) {
+            s.otpEmail = email;
+            s.otpCode = code;
+            s.otpExpiresAtNanos = ticker.read() + OTP_TTL_NANOS;
+        }
     }
 
     /**
@@ -253,8 +280,18 @@ public class RegistrationService {
                 return Optional.empty(); // 已锁死
             }
             String normalized = email == null ? "" : email.trim();
+            boolean owner = s.ownsEmail(s.otpEmail);
+            String failKey = "verify-fail:" + emailKey(s.otpEmail);
+            if (!owner && dailyCount(failKey) >= MAX_VERIFY_FAILURES_PER_EMAIL_PER_DAY) {
+                return Optional.empty(); // 针对这个邮箱的猜码额度今天已用完，正确码也不放行
+            }
             boolean ok = s.otpEmail.equalsIgnoreCase(normalized) && s.otpCode.equals(code);
             if (!ok) {
+                if (!owner) {
+                    synchronized (dailyCounts) {
+                        dailyCounts.get(failKey, k -> new AtomicInteger()).incrementAndGet();
+                    }
+                }
                 if (++s.verifyAttempts >= MAX_VERIFY_ATTEMPTS) {
                     sessions.invalidate(pendingId); // 锁死即作废：调用方据此提示重新登录，也不再能发信
                 }

@@ -51,7 +51,7 @@ class RegistrationServiceTests {
     }
 
     private PendingRegistration reg(String providerEmail) {
-        return new PendingRegistration("discord", "snow-1", "Nick", null, providerEmail, null);
+        return new PendingRegistration("discord", "snow-1", "Nick", null, providerEmail, null, false);
     }
 
     /** 发一次码并抓出邮件正文里最新的 6 位验证码（sendHtml 已 mock 成 true）。 */
@@ -112,7 +112,7 @@ class RegistrationServiceTests {
 
     /** 一次真实 OAuth = 一个新会话；identity 即第三方 user id。 */
     private String session(String identity) {
-        return svc.begin(new PendingRegistration("discord", identity, "N", null, null, null));
+        return svc.begin(new PendingRegistration("discord", identity, "N", null, null, null, false));
     }
 
     @Test
@@ -144,31 +144,103 @@ class RegistrationServiceTests {
     @Test
     void requestsRejectedByOneCapDoNotConsumeTheOthers() {
         when(email.sendHtml(anyString(), anyString(), anyString())).thenReturn(true);
-        for (int i = 0; i < 10; i++) {
-            assertThat(svc.sendOtp(session("spammer"), "e" + i + "@x.com")).isEqualTo(SendResult.SENT);
+        // 4 个号各自把身份限额（10）用在别的邮箱上，再各对受害者邮箱试 5 次：全被身份限额拒掉。
+        // 被拒的请求若顺手占了按邮箱的格子，4 × 5 = 20 正好把受害者邮箱的全局天花板占满。
+        for (int a = 0; a < 4; a++) {
+            for (int i = 0; i < 10; i++) {
+                assertThat(svc.sendOtp(session("spammer-" + a), "e" + a + "-" + i + "@x.com")).isEqualTo(SendResult.SENT);
+            }
+            for (int i = 0; i < 5; i++) {
+                assertThat(svc.sendOtp(session("spammer-" + a), "victim@x.com")).isEqualTo(SendResult.RATE_LIMITED);
+            }
         }
-        // 身份限额已满：被拒的请求不能顺手吃掉受害者邮箱的限额
-        for (int i = 0; i < 25; i++) {
-            assertThat(svc.sendOtp(session("spammer"), "victim@x.com")).isEqualTo(SendResult.RATE_LIMITED);
-        }
-        assertThat(svc.sendOtp(session("victim"), "victim@x.com")).isEqualTo(SendResult.SENT);
+        assertThat(svc.sendOtp(session("bystander"), "victim@x.com")).isEqualTo(SendResult.SENT);
     }
 
     @Test
-    void failedSendsDoNotConsumeQuota() {
+    void ownerIsExemptFromThePerEmailCeiling() {
+        when(email.sendHtml(anyString(), anyString(), anyString())).thenReturn(true);
+        for (int i = 0; i < 20; i++) {
+            assertThat(svc.sendOtp(session("snow-" + i / 5), "victim@x.com")).isEqualTo(SendResult.SENT);
+        }
+        // provider 已验证过这个邮箱 = 调用方就是邮箱主人：别人占满天花板也锁不住他
+        String owner = svc.begin(new PendingRegistration("discord", "owner", "N", null, "Victim@X.com", null, true));
+        assertThat(svc.sendOtp(owner, "victim@x.com")).isEqualTo(SendResult.SENT);
+        // 只是"声称"这个邮箱（provider 未验证）不算
+        String claimant = svc.begin(new PendingRegistration("discord", "claimant", "N", null, "victim@x.com", null, false));
+        assertThat(svc.sendOtp(claimant, "victim@x.com")).isEqualTo(SendResult.RATE_LIMITED);
+    }
+
+    @Test
+    void failedSendsRefundTheEmailQuotaButNotTheCallersOwnBudget() {
+        when(email.sendHtml(anyString(), anyString(), anyString())).thenReturn(false);
+        for (int i = 0; i < 10; i++) {
+            assertThat(svc.sendOtp(session("failing"), "victim@x.com")).isEqualTo(SendResult.SEND_FAILED);
+        }
+        // 身份限额是调用方自己的预算，失败也照算：不然换会话就能无限打 Resend
+        assertThat(svc.sendOtp(session("failing"), "fresh@x.com")).isEqualTo(SendResult.RATE_LIMITED);
+
+        // 按邮箱计的限额全数退还：失败的 10 次没占受害者邮箱的格子，别人照样还有 20 封的额度
+        when(email.sendHtml(anyString(), anyString(), anyString())).thenReturn(true);
+        for (int i = 0; i < 20; i++) {
+            assertThat(svc.sendOtp(session("snow-" + i / 5), "victim@x.com")).isEqualTo(SendResult.SENT);
+        }
+        assertThat(svc.sendOtp(session("snow-late"), "victim@x.com")).isEqualTo(SendResult.RATE_LIMITED);
+    }
+
+    @Test
+    void failedSendsStillCountWithinTheSession() {
         when(email.sendHtml(anyString(), anyString(), anyString())).thenReturn(false);
         String pid = svc.begin(reg(null));
-        for (int i = 0; i < 6; i++) {
-            assertThat(svc.sendOtp(pid, "a@e.com")).isEqualTo(SendResult.SEND_FAILED);
-            assertThat(svc.sendOtp(pid, "a@e.com")).as("失败也走冷却").isEqualTo(SendResult.RATE_LIMITED);
-            ticker.advance(Duration.ofSeconds(61));
-        }
-        // 6 次失败若计数，会话 5 封 /（邮箱, 身份）5 封都已用完
-        when(email.sendHtml(anyString(), anyString(), anyString())).thenReturn(true);
         for (int i = 0; i < 5; i++) {
-            assertThat(svc.sendOtp(pid, "a@e.com")).isEqualTo(SendResult.SENT);
+            assertThat(svc.sendOtp(pid, "a" + i + "@e.com")).isEqualTo(SendResult.SEND_FAILED);
+            assertThat(svc.sendOtp(pid, "a" + i + "@e.com")).as("失败也走冷却").isEqualTo(SendResult.RATE_LIMITED);
             ticker.advance(Duration.ofSeconds(61));
         }
+        when(email.sendHtml(anyString(), anyString(), anyString())).thenReturn(true);
+        assertThat(svc.sendOtp(pid, "ok@e.com")).isEqualTo(SendResult.RATE_LIMITED);
+    }
+
+    @Test
+    void codeIsNotVerifiableWhileTheSendIsInFlight() {
+        String pid = svc.begin(reg(null));
+        AtomicInteger inFlightHits = new AtomicInteger();
+        when(email.sendHtml(eq("a@e.com"), anyString(), anyString())).thenAnswer(inv -> {
+            Matcher m = Pattern.compile("(\\d{6})").matcher(inv.<String>getArgument(2));
+            assertThat(m.find()).isTrue();
+            if (svc.verifyAndConsume(pid, "a@e.com", m.group(1)).isPresent()) {
+                inFlightHits.incrementAndGet();
+            }
+            return false; // 发信最终失败
+        });
+        assertThat(svc.sendOtp(pid, "a@e.com")).isEqualTo(SendResult.SEND_FAILED);
+        assertThat(inFlightHits).as("发信途中码还没生效").hasValue(0);
+        assertThat(svc.getPending(pid)).as("途中的校验也没把会话消费掉").isPresent();
+    }
+
+    @Test
+    void verifyFailuresAgainstOneEmailAreCappedAcrossSessionsAndIdentities() {
+        // 两个号各开一个会话对受害者邮箱错码 5 次：合计 10 次，到顶
+        for (String attacker : new String[] {"guesser-1", "guesser-2"}) {
+            String pid = session(attacker);
+            sendAndCaptureCode(pid, "victim@x.com");
+            for (int i = 0; i < 5; i++) {
+                assertThat(svc.verifyAndConsume(pid, "victim@x.com", "000000")).isEmpty();
+            }
+        }
+        // 第三个号就算拿到正确码也不放行：否则多开身份就能多猜
+        String third = session("guesser-3");
+        String code = sendAndCaptureCode(third, "victim@x.com");
+        assertThat(svc.verifyAndConsume(third, "victim@x.com", code)).isEmpty();
+        // 邮箱主人不受这项限制
+        String owner = svc.begin(new PendingRegistration("discord", "owner", "N", null, "victim@x.com", null, true));
+        String ownerCode = sendAndCaptureCode(owner, "victim@x.com");
+        assertThat(svc.verifyAndConsume(owner, "victim@x.com", ownerCode)).isPresent();
+        // 一天后额度恢复
+        ticker.advance(Duration.ofDays(1).plusSeconds(1));
+        String later = session("guesser-4");
+        String laterCode = sendAndCaptureCode(later, "victim@x.com");
+        assertThat(svc.verifyAndConsume(later, "victim@x.com", laterCode)).isPresent();
     }
 
     @Test

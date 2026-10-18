@@ -285,7 +285,7 @@ class AuthServiceTests {
         when(userCenterService.findByUsername("github_12345")).thenReturn(Optional.empty());
 
         assertThat(expectRegistration("github", ghUser)).isEqualTo(new com.involutionhell.backend.usercenter.model.PendingRegistration(
-                "github", "12345", "GitHubNick", "https://avatar.url", "user@github.com", 12345L));
+                "github", "12345", "GitHubNick", "https://avatar.url", "user@github.com", 12345L, true));
     }
 
     @Test
@@ -461,7 +461,7 @@ class AuthServiceTests {
     @Test
     void completeRegistrationCreatesAccountWithVerifiedEmailAndIdentity() {
         var pending = new com.involutionhell.backend.usercenter.model.PendingRegistration(
-                "discord", "snow-6", "Nick", "https://a", "prefill@example.com", null);
+                "discord", "snow-6", "Nick", "https://a", "prefill@example.com", null, false);
         when(passwordService.hash(any())).thenReturn("hash");
         when(userCenterService.createUser(any())).thenAnswer(inv -> {
             UserAccount a = inv.getArgument(0);
@@ -488,7 +488,7 @@ class AuthServiceTests {
     void completeRegistrationRefusesEmailOfExistingAccountWithoutLinking() {
         when(userAccountRepository.findByEmail("alice@example.com")).thenReturn(java.util.List.of(enabledUser(2L, "alice", "h")));
         var pending = new com.involutionhell.backend.usercenter.model.PendingRegistration(
-                "discord", "snow-7", "Nick", null, null, null);
+                "discord", "snow-7", "Nick", null, null, null, false);
 
         try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
             assertThatThrownBy(() -> authService.completeRegistration(
@@ -687,7 +687,7 @@ class AuthServiceTests {
                     a.roles(), a.permissions(), a.avatarUrl(), a.email(), a.githubId(), null);
         });
         var pending = new com.involutionhell.backend.usercenter.model.PendingRegistration(
-                "github", "12345", "Nick", null, null, 12345L);
+                "github", "12345", "Nick", null, null, 12345L, false);
 
         try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
             authService.completeRegistration(new RegistrationService.VerifiedRegistration(pending, "me@example.com"));

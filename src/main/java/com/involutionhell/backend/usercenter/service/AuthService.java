@@ -146,7 +146,7 @@ public class AuthService {
         if (found.isEmpty()) {
             // 新用户：不在这里建号，先验证邮箱（RegistrationService），验证通过由 completeRegistration 建号。
             return new NeedsRegistration(registrationService.begin(new PendingRegistration(
-                    provider, providerUserId, displayName, avatarUrl, email, gid)));
+                    provider, providerUserId, displayName, avatarUrl, email, gid, verifiedEmail != null)));
         }
         UserAccount userAccount = found.get();
         if (!userAccount.enabled()) {
