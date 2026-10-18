@@ -33,6 +33,9 @@ class JdbcUserAccountRepositoryTests {
     @Autowired
     private JdbcUserAccountRepository repository;
 
+    @Autowired
+    private org.springframework.jdbc.core.JdbcTemplate jdbc;
+
     // =============================================
     // findById
     // =============================================
@@ -177,16 +180,43 @@ class JdbcUserAccountRepositoryTests {
     // =============================================
 
     @Test
-    void updateProfileUpdatesGithubFields() {
+    void updateProfileFillsBlankColumnsButKeepsExistingDisplayName() {
+        // 种子 alice：display_name='Alice'，头像/邮箱/github_id 都为空
         UserAccount updated = repository.updateProfile(
                 2L, "Alice Updated", "https://new-avatar.com", "alice@github.com", 12345L
         );
 
         assertThat(updated.username()).isEqualTo("alice");
-        assertThat(updated.displayName()).isEqualTo("Alice Updated");
+        assertThat(updated.displayName()).as("已有值不被覆盖").isEqualTo("Alice");
         assertThat(updated.avatarUrl()).isEqualTo("https://new-avatar.com");
         assertThat(updated.email()).isEqualTo("alice@github.com");
         assertThat(updated.githubId()).isEqualTo(12345L);
+    }
+
+    @Test
+    void updateProfileNeverOverwritesOrNullsExistingValues() {
+        repository.updateProfile(2L, null, "https://a.png", "alice@github.com", 12345L);
+
+        // 换个 provider 登录：null 不能抹掉 email/github_id，新值也不能覆盖旧值
+        UserAccount afterNulls = repository.updateProfile(2L, null, null, null, null);
+        UserAccount afterOthers = repository.updateProfile(2L, "Other", "https://b.png", "other@x.com", 999L);
+
+        for (UserAccount u : List.of(afterNulls, afterOthers)) {
+            assertThat(u.displayName()).isEqualTo("Alice");
+            assertThat(u.avatarUrl()).isEqualTo("https://a.png");
+            assertThat(u.email()).isEqualTo("alice@github.com");
+            assertThat(u.githubId()).isEqualTo(12345L);
+        }
+    }
+
+    @Test
+    void updateProfileTreatsEmptyStringAsBlank() {
+        jdbc.update("UPDATE user_accounts SET display_name = '', email = '' WHERE id = 2");
+
+        UserAccount updated = repository.updateProfile(2L, "Alice", null, "alice@github.com", null);
+
+        assertThat(updated.displayName()).isEqualTo("Alice");
+        assertThat(updated.email()).isEqualTo("alice@github.com");
     }
 
     @Test

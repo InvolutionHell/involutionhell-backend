@@ -124,5 +124,6 @@ INV-006 已被"付费 LLM 端点限流"占用，编号按 SECURITY.md 流水规�
 | M3 后端 | Discord provider（自定义 AuthSource）+ OAuth 端点泛化为 {provider} | ✅ #48 |
 | M3 前端 | 登录页 Discord 按钮 + 设置页身份 UI | ✅ #382/#383 |
 | OTP 注册 | 自有验证码验邮箱→规范身份（**待事务邮件基础设施**） | 待做 |
-| M2b 绑定 | 设置页"连接新 provider"（可选，次要路径） | 待做 |
+| M2b 绑定 | 设置页"连接新 provider"（可选，次要路径） | ✅ #57 |
+| 登录主查翻转 | `loginByProvider` 改 identity-first：先查 `user_identities`，miss 才回退 username → 已验证邮箱挂靠 → 建号；`updateProfile` 只补空列（不覆盖、不写 NULL、非 github 不写 `github_id`）。**必须与 M2b 同时或更早上线**：绑定后身份所属账号的用户名不再是 `{provider}_{id}`，username 主查会 miss → 邮箱不同即分叉，GitHub 则撞 `UNIQUE(github_id)` | ✅ #57 |
 | M4 | identities 稳定一个版本后删 `github_id` 列（单独拆期，保回滚路径） | 待做 |

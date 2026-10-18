@@ -81,7 +81,9 @@ class AuthServiceTests {
      * 造 Discord AuthUser（带 rawUserInfo.verified，供已验证邮箱自动关联测试）。
      */
     private AuthUser discordUser(String uuid, String email, boolean emailVerified) {
-        AuthUser user = mock(AuthUser.class);
+        // lenient：身份命中路径不验邮箱，rawUserInfo 的 stub 用不到
+        AuthUser user = mock(AuthUser.class,
+                org.mockito.Mockito.withSettings().strictness(org.mockito.quality.Strictness.LENIENT));
         when(user.getUuid()).thenReturn(uuid);
         when(user.getNickname()).thenReturn("dc-" + uuid);
         when(user.getAvatar()).thenReturn(null);
@@ -339,12 +341,14 @@ class AuthServiceTests {
     }
 
     @Test
-    void loginByGithubUpdatesProfileWhenUserAlreadyExists() {
+    void loginByGithubFillsBlankProfileWhenUserAlreadyExists() {
         AuthUser ghUser = githubUser("12345", "UpdatedNick", "https://new-avatar.url", "new@github.com");
 
         UserAccount existing = enabledUser(10L, "github_12345", "hash");
+        // updateProfile 只补空列（SQL 见 JdbcUserAccountRepositoryTests）：已有展示名保留，
+        // 原本为空的头像/邮箱/github_id 被补上。
         UserAccount afterUpdate = new UserAccount(
-                10L, "github_12345", "hash", "UpdatedNick", true,
+                10L, "github_12345", "hash", "显示名称", true,
                 Set.of("user"), Set.of("user:profile:read"),
                 "https://new-avatar.url", "new@github.com", 12345L, null
         );
@@ -360,7 +364,7 @@ class AuthServiceTests {
 
             // 已有用户应走 updateProfile 而非 createUser
             verify(userCenterService).updateProfile(10L, "UpdatedNick", "https://new-avatar.url", "new@github.com", 12345L);
-            assertThat(response.user().displayName()).isEqualTo("UpdatedNick");
+            assertThat(response.user().displayName()).isEqualTo("显示名称");
             assertThat(response.user().githubId()).isEqualTo(12345L);
         }
     }
@@ -423,8 +427,6 @@ class AuthServiceTests {
     @Test
     void existingIdentityRefreshesLastLoginInsteadOfInserting() {
         AuthUser ghUser = githubUser("12345", "Nick", null, null);
-        when(userCenterService.findByUsername("github_12345"))
-                .thenReturn(Optional.of(enabledUser(10L, "github_12345", "hash")));
         when(userCenterService.updateProfile(any(), any(), any(), any(), any()))
                 .thenReturn(enabledUser(10L, "github_12345", "hash"));
         // 该 provider 身份已存在 → 不应再 insert，只刷新 last_login_at
@@ -561,6 +563,111 @@ class AuthServiceTests {
 
         verify(userCenterService, org.mockito.Mockito.never()).createUser(any());
         verify(userAccountRepository).setGithubIdIfAbsent(50L, 555L);
+    }
+
+    // =============================================
+    // loginByProvider() - identity-first（M2b 绑定后不能按用户名/邮箱找人）
+    // =============================================
+
+    private static com.involutionhell.backend.usercenter.model.UserIdentity identity(
+            long userId, String provider, String providerUserId) {
+        return new com.involutionhell.backend.usercenter.model.UserIdentity(
+                7L, userId, provider, providerUserId, null, null, null, null);
+    }
+
+    @Test
+    void boundDiscordIdentityWithDifferentEmailLogsIntoOriginalAccount() {
+        // github 账号绑了一个邮箱不同的 Discord。按用户名 discord_snow-b 查不到、按邮箱也匹配不上，
+        // 身份优先之前这里会建第二个账号。
+        AuthUser dc = discordUser("snow-b", "other@example.com", true);
+        when(userIdentityRepository.findByProviderAndProviderUserId("discord", "snow-b"))
+                .thenReturn(Optional.of(identity(10L, "discord", "snow-b")));
+        when(userCenterService.updateProfile(eq(10L), any(), any(), eq("other@example.com"), org.mockito.ArgumentMatchers.isNull()))
+                .thenReturn(enabledUser(10L, "github_12345", "hash"));
+
+        try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
+            stpUtil.when(StpUtil::getTokenName).thenReturn("satoken");
+            stpUtil.when(StpUtil::getTokenValue).thenReturn("tok");
+            LoginResponse res = authService.loginByProvider("discord", dc);
+
+            stpUtil.verify(() -> StpUtil.login(10L));
+            assertThat(res.user().username()).isEqualTo("github_12345");
+        }
+        verify(userCenterService, org.mockito.Mockito.never()).createUser(any());
+        verify(userCenterService, org.mockito.Mockito.never()).findByUsername(any());
+        verify(userAccountRepository, org.mockito.Mockito.never()).findByEmail(any());
+    }
+
+    @Test
+    void discordLoginNeverWritesGithubIdEvenWithNumericSnowflake() {
+        // Discord id 也是纯数字，误当 github_id 写进去就会把别人的 /u/{githubId} 指过来
+        String snowflake = "123456789012345678";
+        when(userIdentityRepository.findByProviderAndProviderUserId("discord", snowflake))
+                .thenReturn(Optional.of(identity(10L, "discord", snowflake)));
+        when(userCenterService.updateProfile(eq(10L), any(), any(), any(), any()))
+                .thenReturn(enabledUser(10L, "github_12345", "hash"));
+
+        try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
+            authService.loginByProvider("discord", discordUser(snowflake, null, false));
+        }
+        verify(userCenterService).updateProfile(eq(10L), any(), any(), any(),
+                org.mockito.ArgumentMatchers.isNull());
+    }
+
+    @Test
+    void githubLoginAfterBindOnNonGithubAccountLandsThereWithoutCreatingAccount() {
+        // 非 github_ 账号绑了 GitHub（bind 已写 github_id=555）。旧逻辑按 github_555 查 miss →
+        // 建号 → 撞 UNIQUE(github_id)。这里让 createUser 抛约束异常，证明根本没走到它。
+        AuthUser gh = githubUser("555", "Nick", null, null);
+        when(userIdentityRepository.findByProviderAndProviderUserId("github", "555"))
+                .thenReturn(Optional.of(identity(50L, "github", "555")));
+        when(userCenterService.updateProfile(50L, "Nick", null, null, 555L))
+                .thenReturn(new UserAccount(50L, "discord_snow-x", "hash", "显示名", true,
+                        Set.of("user"), Set.of(), null, null, 555L, null));
+        org.mockito.Mockito.lenient().when(userCenterService.createUser(any()))
+                .thenThrow(new org.springframework.dao.DuplicateKeyException("UNIQUE(github_id)"));
+
+        try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
+            stpUtil.when(StpUtil::getTokenName).thenReturn("satoken");
+            stpUtil.when(StpUtil::getTokenValue).thenReturn("tok");
+            LoginResponse res = authService.loginByProvider("github", gh);
+
+            stpUtil.verify(() -> StpUtil.login(50L));
+            assertThat(res.user().username()).isEqualTo("discord_snow-x");
+        }
+        verify(userCenterService, org.mockito.Mockito.never()).createUser(any());
+    }
+
+    @Test
+    void autoLinkedIdentitySurvivesEmailChange() {
+        // 第一次：Discord 已验证邮箱命中 github 账号 → 挂靠并写入身份行。
+        // 第二次：Discord 那边换了邮箱 → 必须靠身份行找回同一账号，而不是再走邮箱匹配建新号。
+        var stored = new java.util.concurrent.atomic.AtomicReference<
+                com.involutionhell.backend.usercenter.model.UserIdentity>();
+        org.mockito.Mockito.doAnswer(inv -> {
+            com.involutionhell.backend.usercenter.model.UserIdentity i = inv.getArgument(0);
+            stored.set(identity(i.userId(), i.provider(), i.providerUserId()));
+            return stored.get();
+        }).when(userIdentityRepository).insert(any());
+        when(userIdentityRepository.findByProviderAndProviderUserId("discord", "snow-c"))
+                .thenAnswer(inv -> Optional.ofNullable(stored.get()));
+
+        UserAccount original = enabledUser(10L, "github_12345", "hash");
+        when(userAccountRepository.findByEmail("alice@example.com")).thenReturn(java.util.List.of(original));
+        when(userCenterService.updateProfile(eq(10L), any(), any(), eq("alice-new@example.com"), org.mockito.ArgumentMatchers.isNull()))
+                .thenReturn(original);
+
+        try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
+            stpUtil.when(StpUtil::getTokenName).thenReturn("satoken");
+            stpUtil.when(StpUtil::getTokenValue).thenReturn("tok");
+
+            authService.loginByProvider("discord", discordUser("snow-c", "alice@example.com", true));
+            authService.loginByProvider("discord", discordUser("snow-c", "alice-new@example.com", true));
+
+            stpUtil.verify(() -> StpUtil.login(10L), org.mockito.Mockito.times(2));
+        }
+        verify(userCenterService, org.mockito.Mockito.never()).createUser(any());
+        verify(userIdentityRepository).insert(any()); // 只在第一次挂靠时插一行
     }
 
     // =============================================

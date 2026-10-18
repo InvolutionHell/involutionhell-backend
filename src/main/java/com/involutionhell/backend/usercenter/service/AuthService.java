@@ -87,12 +87,15 @@ public class AuthService {
 
     /**
      * 第三方 provider 授权登录（M1 统一流程）。
-     * 不存在则自动注册，已存在则刷新资料；无论哪条路径都维护一行 user_identities。
+     * 不存在则自动注册，已存在则补齐资料；无论哪条路径都维护一行 user_identities。
      *
-     * 双写期语义（ADR-001，M1-M3）：账号仍按 "{provider}_{providerUserId}" 用户名主查，
-     * user_identities 作为并行写入的第二真相源（M3 才翻转成主查）。github 的 github_id
-     * 列同样双写（createUser/updateProfile 已写）。identity 缺失时惰性补齐（自愈），
-     * 兜住 M0-M1 窗口内注册、回填尚未覆盖的账号。
+     * 查找顺序（identity-first，ADR-001 迁移表"登录主查翻转"）：
+     *   1. user_identities 命中 (provider, providerUserId) → 登入该身份所属账号；
+     *   2. 未命中 → 按 "{provider}_{providerUserId}" 用户名查（兜住 M0 回填尚未覆盖的老账号）；
+     *   3. 仍未命中 → 已验证邮箱自动关联 → 建号。
+     * 必须身份优先：M2b 绑定后，身份所属账号的用户名不再是 "{provider}_{id}"，按用户名查
+     * 会 miss → 走邮箱关联（邮箱不同即分叉）或建号（github 撞 UNIQUE(github_id) 直接 500）。
+     * identity 缺失时由 ensureIdentity 惰性补齐（自愈）。
      */
     public LoginResponse loginByProvider(String provider, AuthUser authUser) {
         String providerUserId = authUser.getUuid();
@@ -114,11 +117,13 @@ public class AuthService {
         }
         final Long githubId = parsedGithubId;
 
-        UserAccount userAccount = userCenterService.findByUsername(username).map(existing ->
-            userCenterService.updateProfile(existing.id(), displayName, avatarUrl, email, githubId)
-        ).orElseGet(() ->
-            autoLinkByVerifiedEmailOrCreate(provider, authUser, username, displayName, avatarUrl, email, githubId)
-        );
+        // 身份查询失败直接抛：吞掉再回退到用户名/邮箱路径，一次 DB 抖动就可能分叉出新账号。
+        UserAccount userAccount = userIdentityRepository.findByProviderAndProviderUserId(provider, providerUserId)
+                .map(UserIdentity::userId)
+                .or(() -> userCenterService.findByUsername(username).map(UserAccount::id))
+                .map(userId -> userCenterService.updateProfile(userId, displayName, avatarUrl, email, githubId))
+                .orElseGet(() -> autoLinkByVerifiedEmailOrCreate(
+                        provider, authUser, username, displayName, avatarUrl, email, githubId));
 
         if (!userAccount.enabled()) {
             throw new IllegalStateException("账号已被禁用");
