@@ -4,6 +4,7 @@ import cn.dev33.satoken.stp.StpUtil;
 import com.involutionhell.backend.usercenter.dto.LoginRequest;
 import com.involutionhell.backend.usercenter.dto.LoginResponse;
 import com.involutionhell.backend.usercenter.dto.UserView;
+import com.involutionhell.backend.usercenter.model.PendingRegistration;
 import com.involutionhell.backend.usercenter.model.UserAccount;
 import com.involutionhell.backend.usercenter.model.UserIdentity;
 import com.involutionhell.backend.usercenter.repository.UserAccountRepository;
@@ -13,6 +14,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
@@ -26,6 +28,15 @@ public class AuthService {
     private final UserAccountRepository userAccountRepository;
     private final UserIdentityRepository userIdentityRepository;
     private final com.involutionhell.backend.usercenter.oauth.AuthProviderRegistry providers;
+    private final RegistrationService registrationService;
+
+    /** 第三方登录的两种结局：登进已有账号，或（新用户）先去验证邮箱。 */
+    public sealed interface ProviderLogin permits LoggedIn, NeedsRegistration {}
+    public record LoggedIn(LoginResponse response) implements ProviderLogin {}
+    public record NeedsRegistration(String pendingId) implements ProviderLogin {}
+
+    /** 验证通过的邮箱已属于某个已有账号。不合并（ADR-001 红线），让用户登录那个账号后去绑定。 */
+    public static class EmailTakenException extends RuntimeException {}
 
     /**
      * 创建认证服务并注入用户与密码服务。
@@ -34,12 +45,14 @@ public class AuthService {
                        PasswordService passwordService,
                        UserAccountRepository userAccountRepository,
                        UserIdentityRepository userIdentityRepository,
-                       com.involutionhell.backend.usercenter.oauth.AuthProviderRegistry providers) {
+                       com.involutionhell.backend.usercenter.oauth.AuthProviderRegistry providers,
+                       RegistrationService registrationService) {
         this.userCenterService = userCenterService;
         this.passwordService = passwordService;
         this.userAccountRepository = userAccountRepository;
         this.userIdentityRepository = userIdentityRepository;
         this.providers = providers;
+        this.registrationService = registrationService;
     }
 
     /**
@@ -79,25 +92,19 @@ public class AuthService {
     }
     
     /**
-     * GitHub 授权登录（薄委托）。历史入口，保留供 OAuthController 调用。
-     */
-    public LoginResponse loginByGithub(AuthUser githubUser) {
-        return loginByProvider("github", githubUser);
-    }
-
-    /**
-     * 第三方 provider 授权登录（M1 统一流程）。
-     * 不存在则自动注册，已存在则补齐资料；无论哪条路径都维护一行 user_identities。
+     * 第三方 provider 授权登录（M1 统一流程）。只登入已有账号，**从不建号**：
+     * 找到账号则补齐资料并维护一行 user_identities；新用户返回 {@link NeedsRegistration}，
+     * 验证邮箱后由 {@link #completeRegistration} 建号。
      *
      * 查找顺序（identity-first，ADR-001 迁移表"登录主查翻转"）：
      *   1. user_identities 命中 (provider, providerUserId) → 登入该身份所属账号；
      *   2. 未命中 → 按 "{provider}_{providerUserId}" 用户名查（兜住 M0 回填尚未覆盖的老账号）；
-     *   3. 仍未命中 → 已验证邮箱自动关联 → 建号。
+     *   3. 仍未命中 → 已验证邮箱自动关联 → 都不中则进 OTP 注册。
      * 必须身份优先：M2b 绑定后，身份所属账号的用户名不再是 "{provider}_{id}"，按用户名查
      * 会 miss → 走邮箱关联（邮箱不同即分叉）或建号（github 撞 UNIQUE(github_id) 直接 500）。
      * identity 缺失时由 ensureIdentity 惰性补齐（自愈）。
      */
-    public LoginResponse loginByProvider(String provider, AuthUser authUser) {
+    public ProviderLogin loginByProvider(String provider, AuthUser authUser) {
         String providerUserId = authUser.getUuid();
         // 保留 "{provider}_{id}" 用户名约定（github 即 "github_{id}"，与历史一致）。
         String username = provider + "_" + providerUserId;
@@ -105,89 +112,107 @@ public class AuthService {
         String displayName = authUser.getNickname() != null ? authUser.getNickname() : authUser.getUsername();
         String avatarUrl   = authUser.getAvatar();
         String email       = authUser.getEmail();
-        // github 的 uuid 就是数字用户 ID；非数字（极罕见）时置 null。
-        // 非 github provider 不写 github_id 列。
-        Long parsedGithubId = null;
+        // 只有 provider 已验证的邮箱才配写进 user_accounts.email：它是自动挂靠的锚点，
+        // 写进未验证邮箱 = 给"谎称别人邮箱"的第三方号留了一个挂靠入口。
+        String verifiedEmail = isProviderEmailVerified(provider, authUser) ? email : null;
+        Long githubId = null;
         if ("github".equals(provider)) {
             try {
-                parsedGithubId = Long.parseLong(providerUserId);
+                githubId = Long.parseLong(providerUserId);
             } catch (NumberFormatException e) {
-                parsedGithubId = null;
+                githubId = null;
             }
         }
-        final Long githubId = parsedGithubId;
+        final Long gid = githubId;
 
         // 身份查询失败直接抛：吞掉再回退到用户名/邮箱路径，一次 DB 抖动就可能分叉出新账号。
-        UserAccount userAccount = userIdentityRepository.findByProviderAndProviderUserId(provider, providerUserId)
+        Optional<UserAccount> found = userIdentityRepository.findByProviderAndProviderUserId(provider, providerUserId)
                 .map(UserIdentity::userId)
                 .or(() -> userCenterService.findByUsername(username).map(UserAccount::id))
-                .map(userId -> userCenterService.updateProfile(userId, displayName, avatarUrl, email, githubId))
-                .orElseGet(() -> autoLinkByVerifiedEmailOrCreate(
-                        provider, authUser, username, displayName, avatarUrl, email, githubId));
+                .map(userId -> userCenterService.updateProfile(userId, displayName, avatarUrl, verifiedEmail, gid))
+                .or(() -> autoLinkByVerifiedEmail(provider, verifiedEmail, gid));
 
+        if (found.isEmpty()) {
+            // 新用户：不在这里建号，先验证邮箱（RegistrationService），验证通过由 completeRegistration 建号。
+            return new NeedsRegistration(registrationService.begin(new PendingRegistration(
+                    provider, providerUserId, displayName, avatarUrl, email, gid)));
+        }
+        UserAccount userAccount = found.get();
         if (!userAccount.enabled()) {
             throw new IllegalStateException("账号已被禁用");
         }
 
         ensureIdentity(userAccount.id(), provider, providerUserId, email, displayName);
 
-        return executeLogin(userAccount);
+        return new LoggedIn(executeLogin(userAccount));
     }
 
     /**
-     * 该 provider 首次登录、账号还不存在时：
-     *   1. provider 的**已验证**邮箱唯一匹配到某个已有账号 → 挂靠到那个账号（不建新号），
-     *      防止已有 GitHub 账号的人用 Discord 登录被分叉出第二个账号；
-     *   2. 否则（邮箱缺失 / 未验证 / 无匹配 / 多个匹配）→ 建新账号。
-     *
-     * 安全前提：只信"provider 已验证"的邮箱。攻击者拿受害者邮箱注册的第三方号无法把
-     * 邮箱标成 verified（要点验证链接=控制邮箱），所以自动关联不增加攻击面（ADR-001）。
-     * 挂靠时**不覆盖**已有账号的展示名/头像/github_id——只由 ensureIdentity 挂上新身份。
-     *
-     * ponytail: 这是"信任 provider verified 邮箱"的即时防分叉；用户自有 OTP 的规范邮箱
-     * 体系（注册时验证）是后续独立子系统，与本逻辑兼容。
+     * OTP 验证通过后建号 + 挂身份 + 登入，同一事务（任一步失败都不留半个账号）。
+     * 邮箱已属于已有账号时抛 {@link EmailTakenException}，什么都不写。
+     * 撞唯一约束（同一身份并发注册）抛 DataIntegrityViolationException，由调用方当作会话失效。
+     * ponytail: StpUtil.login 在提交前执行；提交失败时 token 不会返回给任何人，
+     * 内存里那条会话指向一个永不复用的序列 id，30 天后自然过期。
      */
-    private UserAccount autoLinkByVerifiedEmailOrCreate(String provider, AuthUser authUser, String username,
-                                                        String displayName, String avatarUrl,
-                                                        String email, Long githubId) {
-        if (email != null && !email.isBlank() && isProviderEmailVerified(provider, authUser)) {
-            java.util.List<UserAccount> matches = userAccountRepository.findByEmail(email);
-            if (matches.size() == 1) {
-                UserAccount target = matches.get(0);
-                log.info("verified-email 自动关联：provider={} 的已验证邮箱匹配到已有账号 id={}，挂靠不建新号",
-                        provider, target.id());
-                // 反向场景（先 Discord 注册、后 GitHub 登录挂靠）：目标账号 github_id 可能为空。
-                // M1-M3 双写期贡献归属 / /u/{githubId} 都靠这列，补上（仅当为空，不覆盖）。
-                // 写失败不阻断登录：撞 UNIQUE(github_id) 等极端情况记日志即可。
-                if ("github".equals(provider) && githubId != null && target.githubId() == null) {
-                    try {
-                        userAccountRepository.setGithubIdIfAbsent(target.id(), githubId);
-                    } catch (Exception e) {
-                        log.warn("挂靠时补写 github_id 失败（userId={}）", target.id(), e);
-                    }
-                }
-                return target;
-            }
-            if (matches.size() > 1) {
-                // 多账号共用同一邮箱（不应发生）：保守建新号，绝不猜挂给谁
-                log.warn("verified-email 命中多个账号（{} 个），保守建新号避免挂错", matches.size());
-            }
+    @org.springframework.transaction.annotation.Transactional
+    public LoginResponse completeRegistration(RegistrationService.VerifiedRegistration verified) {
+        if (!userAccountRepository.findByEmail(verified.verifiedEmail()).isEmpty()) {
+            throw new EmailTakenException();
         }
-        UserAccount newUser = new UserAccount(
+        PendingRegistration p = verified.pending();
+        UserAccount created = userCenterService.createUser(new UserAccount(
                 null,
-                username,
+                p.provider() + "_" + p.providerUserId(),
                 // 第三方用户不用密码登录，塞随机超长密码占位（password_hash NOT NULL）
                 passwordService.hash(UUID.randomUUID().toString()),
-                displayName,
+                p.displayName(),
                 true,
                 Set.of("user"),
                 Set.of(),
-                avatarUrl,
-                email,
-                githubId,
+                p.avatarUrl(),
+                verified.verifiedEmail(),
+                p.githubId(),
                 null
-        );
-        return userCenterService.createUser(newUser);
+        ));
+        userIdentityRepository.insert(new UserIdentity(
+                null, created.id(), p.provider(), p.providerUserId(), p.providerEmail(), p.displayName(), null, null));
+        return executeLogin(created);
+    }
+
+    /**
+     * 该 provider 首次登录、账号还不存在时：provider 的**已验证**邮箱唯一匹配到某个已有账号 →
+     * 挂靠到那个账号（不建新号），防止已有 GitHub 账号的人用 Discord 登录被分叉出第二个账号。
+     * 邮箱缺失 / 未验证 / 无匹配 / 多个匹配 → empty，交给 OTP 注册。
+     *
+     * 安全前提：只信"provider 已验证"的邮箱（调用方已过滤）。攻击者拿受害者邮箱注册的第三方号
+     * 无法把邮箱标成 verified，所以自动关联不增加攻击面（ADR-001）。
+     * 挂靠时**不覆盖**已有账号的展示名/头像/github_id——只由 ensureIdentity 挂上新身份。
+     */
+    private Optional<UserAccount> autoLinkByVerifiedEmail(String provider, String verifiedEmail, Long githubId) {
+        if (verifiedEmail == null || verifiedEmail.isBlank()) {
+            return Optional.empty();
+        }
+        java.util.List<UserAccount> matches = userAccountRepository.findByEmail(verifiedEmail);
+        if (matches.size() > 1) {
+            // 多账号共用同一邮箱（不应发生）：绝不猜挂给谁
+            log.warn("verified-email 命中多个账号（{} 个），不自动关联", matches.size());
+        }
+        if (matches.size() != 1) {
+            return Optional.empty();
+        }
+        UserAccount target = matches.get(0);
+        log.info("verified-email 自动关联：provider={} 的已验证邮箱匹配到已有账号 id={}，挂靠不建新号",
+                provider, target.id());
+        // 反向场景（先 Discord 注册、后 GitHub 登录挂靠）：目标账号 github_id 可能为空。
+        // M1-M3 双写期贡献归属 / /u/{githubId} 都靠这列，补上（仅当为空，不覆盖）。
+        if ("github".equals(provider) && githubId != null && target.githubId() == null) {
+            try {
+                userAccountRepository.setGithubIdIfAbsent(target.id(), githubId);
+            } catch (Exception e) {
+                log.warn("挂靠时补写 github_id 失败（userId={}）", target.id(), e);
+            }
+        }
+        return Optional.of(target);
     }
 
     /**

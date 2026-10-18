@@ -10,6 +10,7 @@ import java.time.Duration;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -17,7 +18,7 @@ import org.springframework.stereotype.Service;
 
 /**
  * 注册时的邮箱 OTP 引擎（ADR-001 的"规范邮箱"子系统）。职责聚焦：待注册态 +
- * 验证码生成/发信/校验，全进程内不落库。账号建号/关联落地由调用方（wiring）在
+ * 验证码生成/发信/校验，全进程内不落库。建号由 AuthService#completeRegistration 在
  * OTP 通过后做。只在"第三方登录首次、且未被已验证邮箱自动关联"时进入，不是每次登录。
  *
  * 安全模型（review 后重做）：
@@ -25,14 +26,15 @@ import org.springframework.stereotype.Service;
  *     （不被重发刷新），pending 与 OTP 同生共死，避免两缓存 TTL 错配。
  *   - verifyAttempts 累积计在会话上、**不被重发重置**：整个会话至多 5 次校验尝试，
  *     6 位码的爆破面恒为 5/1e6，堵住"重发归零 attempts 无限爆破"。
- *   - 发信限流：会话内至多 5 封、两封间隔 ≥60s，防邮件轰炸。
+ *   - 发信限流：会话内至多 5 封、两封间隔 ≥60s；跨会话每个收件邮箱每天 5 封、
+ *     每个第三方身份每天 10 封，防邮件轰炸。第 5 次错码即作废会话。
  *   - 校验+消费在会话锁内原子完成，双击/并发只成功一次，杜绝重复建号。
  *   - 校验通过返回**本次实际验证通过的 email**（不是 provider 预填的未验证地址）。
  *
  * ponytail: 进程内 Caffeine，靠单实例 / sticky session 成立；上多实例或 GraalVM
  * native 时会话态要迁 Redis（同 Sa-Token session、JustAuth state，见 ADR-001）。
- * 针对特定 pendingId 的 attempts 耗尽型 DoS 由"pendingId 是随机 UUID + 15min 短命 +
- * 控制层按 IP 限流"共同兜底，引擎层不额外处理。
+ * 针对特定 pendingId 的 attempts 耗尽型 DoS 无从下手：pendingId 是随机 UUID，只在
+ * 发起人浏览器的 httpOnly cookie 里，15min 后过期。
  */
 @Service
 public class RegistrationService {
@@ -43,7 +45,15 @@ public class RegistrationService {
     private static final int MAX_SENDS = 5;
     private static final long RESEND_COOLDOWN_NANOS = Duration.ofSeconds(60).toNanos();
     private static final long OTP_TTL_NANOS = Duration.ofMinutes(10).toNanos();
-    private static final Duration SESSION_TTL = Duration.ofMinutes(15);
+    /** 会话寿命；OAuthController 的 ih_reg_pending cookie Max-Age 与之同源。 */
+    public static final Duration SESSION_TTL = Duration.ofMinutes(15);
+    // 跨会话日限额：每个 pendingId 都要一次真实 OAuth 才能拿到，但同一个第三方号可以反复拿。
+    // 按收件邮箱限 = 防轰炸 + 封顶针对单个邮箱的猜码总量（每会话 5 次 × 每日 5 个会话）；
+    // 按第三方身份限 = 防一个号把我们的发信域名当垃圾邮件中继。
+    // ponytail: 不按 IP —— 后端看不到可信客户端 IP（Vercel 出口 IP 被所有人共享，
+    // X-Real-IP 由 Vercel 填、Caddy 原样透传，直连 api 子域即可伪造）。
+    private static final int MAX_SENDS_PER_EMAIL_PER_DAY = 5;
+    private static final int MAX_SENDS_PER_IDENTITY_PER_DAY = 10;
     // 粗校验邮箱格式，挡住明显非法/注入型输入；真实有效性由"能收到码"证明。
     private static final Pattern EMAIL_RE = Pattern.compile("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$");
 
@@ -57,6 +67,7 @@ public class RegistrationService {
     private final Ticker ticker;
     private final boolean devConsoleOtp;
     private final Cache<String, RegSession> sessions;
+    private final Cache<String, AtomicInteger> dailySends;
 
     @org.springframework.beans.factory.annotation.Autowired
     public RegistrationService(
@@ -76,6 +87,16 @@ public class RegistrationService {
                 .expireAfterWrite(SESSION_TTL)
                 .maximumSize(10_000)
                 .build();
+        this.dailySends = Caffeine.newBuilder()
+                .ticker(ticker)
+                .expireAfterWrite(Duration.ofDays(1))
+                .maximumSize(100_000)
+                .build();
+    }
+
+    /** 固定 24h 窗口计数（同 OpenAiStreamRateLimiter 的写法）；超限返回 false。 */
+    private boolean underDailyCap(String key, int cap) {
+        return dailySends.get(key, k -> new AtomicInteger()).incrementAndGet() <= cap;
     }
 
     /** 一个注册会话的可变状态。所有读改在会话锁内完成。 */
@@ -129,6 +150,11 @@ public class RegistrationService {
             if (s.lastSendAtNanos != Long.MIN_VALUE && now - s.lastSendAtNanos < RESEND_COOLDOWN_NANOS) {
                 return SendResult.RATE_LIMITED;
             }
+            if (!underDailyCap("email:" + normalized.toLowerCase(Locale.ROOT), MAX_SENDS_PER_EMAIL_PER_DAY)
+                    || !underDailyCap("id:" + s.reg.provider() + ":" + s.reg.providerUserId(),
+                            MAX_SENDS_PER_IDENTITY_PER_DAY)) {
+                return SendResult.RATE_LIMITED;
+            }
             code = String.format(Locale.ROOT, "%06d", RANDOM.nextInt(1_000_000));
             s.otpEmail = normalized;
             s.otpCode = code;
@@ -162,7 +188,7 @@ public class RegistrationService {
     /**
      * 校验验证码。成功则**原子**消费整个会话，返回注册意图 + 本次已验证的规范邮箱。
      * 失败返回空（会话过期 / 未发码 / 码过期 / 超次 / 邮箱或码不符）。邮箱必须与发码
-     * 对象一致，防换邮箱绕过。attempts 累积计数，超 {@value #MAX_VERIFY_ATTEMPTS} 即锁死会话。
+     * 对象一致，防换邮箱绕过。attempts 累积计数，第 {@value #MAX_VERIFY_ATTEMPTS} 次错码即作废会话。
      */
     public Optional<VerifiedRegistration> verifyAndConsume(String pendingId, String email, String code) {
         RegSession s = sessions.getIfPresent(pendingId);
@@ -186,7 +212,9 @@ public class RegistrationService {
             String normalized = email == null ? "" : email.trim();
             boolean ok = s.otpEmail.equalsIgnoreCase(normalized) && s.otpCode.equals(code);
             if (!ok) {
-                s.verifyAttempts++;
+                if (++s.verifyAttempts >= MAX_VERIFY_ATTEMPTS) {
+                    sessions.invalidate(pendingId); // 锁死即作废：调用方据此提示重新登录，也不再能发信
+                }
                 return Optional.empty();
             }
             sessions.invalidate(pendingId); // 一次性消费，锁内完成

@@ -8,6 +8,7 @@ import com.involutionhell.backend.usercenter.dto.LoginResponse;
 import com.involutionhell.backend.usercenter.oauth.AuthProvider;
 import com.involutionhell.backend.usercenter.oauth.AuthProviderRegistry;
 import com.involutionhell.backend.usercenter.service.AuthService;
+import com.involutionhell.backend.usercenter.service.RegistrationService;
 import com.involutionhell.backend.usercenter.service.UserIdentityService;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
@@ -28,7 +29,8 @@ import org.springframework.web.bind.annotation.RestController;
 
 /**
  * 第三方 OAuth 的两条流程，共用同一个回调端点：
- *   1. **登录**：/oauth/render/{provider} → 授权 → 回调 → 建号或挂靠已有账号 → 发 token
+ *   1. **登录**：/oauth/render/{provider} → 授权 → 回调 → 登入已有账号发 token；
+ *      新用户不建号，带 ih_reg_pending cookie 去 /login/verify 验证邮箱（AuthController /auth/register/*）
  *   2. **绑定（M2b）**：/oauth/bind/{provider}（需已登录）→ 授权 → 回调 → 把该身份挂到
  *      **当前账号**，不建号、不换会话
  *
@@ -123,8 +125,8 @@ public class OAuthController {
 
     /**
      * 灰度放行判定。闸未启用=全放行（GA）。启用时放行两类人：白名单内的 id，以及
-     * **已经有账号的回访用户**——灰度要挡的是"建新号"（OTP wiring 未完成，新用户
-     * 可能被分叉出第二个账号），不是把已有账号的人锁在自己账号外面。
+     * **已经有账号的回访用户**——灰度要挡的是"新 Discord 用户进注册"，不是把已有账号的人
+     * 锁在自己账号外面。OTP 注册上线后闸已 GA（不配即全开），保留它作为一键收回的回滚开关。
      *
      * 绑定流程（/oauth/bind）不经过这里：绑定不建号，不产生分叉风险。
      */
@@ -148,6 +150,8 @@ public class OAuthController {
     // 丢了意图的绑定当成登录处理，按该第三方身份建号或登进别的账号。
     static final String BIND_COOKIE = "ih_oauth_bind";
     private static final int STATE_COOKIE_MAX_AGE_SECONDS = 300;
+    // 待注册会话（OTP）的 pendingId。AuthController 的 /auth/register/* 读它。
+    public static final String REG_COOKIE = "ih_reg_pending";
 
     /** 发起登录：跳 provider 授权页。 */
     @GetMapping("/oauth/render/{provider}")
@@ -305,9 +309,18 @@ public class OAuthController {
             response.sendRedirect(frontEndUrl + "/login?error=discord_canary");
             return;
         }
-        LoginResponse loginResponse = authService.loginByProvider(p.key(), authUser);
-        // token 放 URL fragment（#token=），不进服务器日志/Referer；前端读入 localStorage
-        response.sendRedirect(frontEndUrl + "/#token=" + loginResponse.tokenValue());
+        switch (authService.loginByProvider(p.key(), authUser)) {
+            // token 放 URL fragment（#token=），不进服务器日志/Referer；前端读入 localStorage
+            case AuthService.LoggedIn(LoginResponse r) -> response.sendRedirect(frontEndUrl + "/#token=" + r.tokenValue());
+            case AuthService.NeedsRegistration(String pendingId) -> {
+                // pendingId 只进 httpOnly cookie、绝不进 URL：URL 里的 pendingId 可以被转发给别人，
+                // 受害者在攻击者的注册会话里验证自己的邮箱 → 攻击者的第三方身份拿到受害者的已验证邮箱
+                // → 受害者日后用 GitHub 登录按邮箱自动挂靠进攻击者账号。cookie 种不进别人的浏览器。
+                response.addHeader("Set-Cookie", buildCookie(REG_COOKIE, pendingId,
+                        (int) RegistrationService.SESSION_TTL.toSeconds()));
+                response.sendRedirect(frontEndUrl + "/login/verify");
+            }
+        }
     }
 
     /**

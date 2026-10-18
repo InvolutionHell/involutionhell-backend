@@ -90,7 +90,7 @@ class OAuthControllerAllowlistTests {
 
     @Test
     void existingIdentityPassesEvenWhenNotAllowlisted() {
-        // 灰度要拦的是新用户建号（OTP wiring 未完成）；已经有账号的人再登录不该被拦，
+        // 灰度要拦的是新用户进注册；已经有账号的人再登录不该被拦，
         // 否则他会被锁在自己的账号外面，且提示只说"敬请期待"。
         when(authService.hasIdentity("discord", "old-user")).thenReturn(true);
         assertThat(withAllowlist("111").discordAllowed("old-user")).isTrue();

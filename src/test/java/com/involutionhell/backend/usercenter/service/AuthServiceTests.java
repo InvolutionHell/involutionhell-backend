@@ -46,6 +46,14 @@ class AuthServiceTests {
 
     private AuthService authService;
 
+    @Mock
+    private RegistrationService registrationService;
+
+    /** 登入已有账号的结局；新用户结局（NeedsRegistration）在这里抛 ClassCastException。 */
+    private LoginResponse loginAs(String provider, AuthUser u) {
+        return ((AuthService.LoggedIn) authService.loginByProvider(provider, u)).response();
+    }
+
     /**
      * 用**真实**的 AuthProviderRegistry + 真实 provider 实例，而不是 mock：
      * "该 provider 的邮箱算不算已验证"是自动关联的安全判据，这里要测真逻辑。
@@ -57,7 +65,8 @@ class AuthServiceTests {
                 new com.involutionhell.backend.usercenter.oauth.GithubAuthProvider("id", "secret", "http://cb/github"),
                 new com.involutionhell.backend.usercenter.oauth.DiscordAuthProvider("id", "secret", "http://cb/discord")));
         authService = new AuthService(userCenterService, passwordService,
-                userAccountRepository, userIdentityRepository, registry);
+                userAccountRepository, userIdentityRepository, registry, registrationService);
+        org.mockito.Mockito.lenient().when(registrationService.begin(any())).thenReturn("pid-1");
     }
 
     /**
@@ -253,91 +262,46 @@ class AuthServiceTests {
     }
 
     // =============================================
-    // loginByGithub() - GitHub OAuth 登录
+    // loginByProvider() - 新用户进注册 / 老用户登入
     // =============================================
 
+    /** 新用户结局：断言没建号、没挂身份、没登入，返回交给 RegistrationService 的注册意图。 */
+    private com.involutionhell.backend.usercenter.model.PendingRegistration expectRegistration(String provider, AuthUser u) {
+        try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
+            assertThat(authService.loginByProvider(provider, u))
+                    .isEqualTo(new AuthService.NeedsRegistration("pid-1"));
+            stpUtil.verifyNoInteractions();
+        }
+        verify(userCenterService, org.mockito.Mockito.never()).createUser(any());
+        verify(userIdentityRepository, org.mockito.Mockito.never()).insert(any());
+        var cap = org.mockito.ArgumentCaptor.forClass(com.involutionhell.backend.usercenter.model.PendingRegistration.class);
+        verify(registrationService).begin(cap.capture());
+        return cap.getValue();
+    }
+
     @Test
-    void loginByGithubAutoRegistersNewUser() {
-        // GitHub UUID 为纯数字，可被解析为 Long
+    void newGithubUserStartsRegistrationInsteadOfCreatingAccount() {
         AuthUser ghUser = githubUser("12345", "GitHubNick", "https://avatar.url", "user@github.com");
-
-        UserAccount createdAccount = enabledUser(10L, "github_12345", "random-hash");
         when(userCenterService.findByUsername("github_12345")).thenReturn(Optional.empty());
-        when(passwordService.hash(any())).thenReturn("random-hash");
-        when(userCenterService.createUser(any())).thenReturn(createdAccount);
 
-        try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
-            stpUtil.when(StpUtil::getTokenName).thenReturn("satoken");
-            stpUtil.when(StpUtil::getTokenValue).thenReturn("token-xyz");
-
-            LoginResponse response = authService.loginByGithub(ghUser);
-
-            // 应调用 createUser 而非 updateProfile
-            verify(userCenterService).createUser(any());
-            assertThat(response.user().username()).isEqualTo("github_12345");
-        }
+        assertThat(expectRegistration("github", ghUser)).isEqualTo(new com.involutionhell.backend.usercenter.model.PendingRegistration(
+                "github", "12345", "GitHubNick", "https://avatar.url", "user@github.com", 12345L));
     }
 
     @Test
-    void loginByGithubSetsCorrectGithubIdOnNewUser() {
-        AuthUser ghUser = githubUser("99999", "Nick", null, null);
-
-        when(userCenterService.findByUsername("github_99999")).thenReturn(Optional.empty());
-        when(passwordService.hash(any())).thenReturn("hash");
-        when(userCenterService.createUser(any())).thenAnswer(inv -> {
-            UserAccount arg = inv.getArgument(0);
-            // 验证 githubId 被正确解析为 Long
-            assertThat(arg.githubId()).isEqualTo(99999L);
-            return enabledUser(10L, "github_99999", "hash");
-        });
-
-        try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
-            stpUtil.when(StpUtil::getTokenName).thenReturn("satoken");
-            stpUtil.when(StpUtil::getTokenValue).thenReturn("token");
-            authService.loginByGithub(ghUser);
-        }
-    }
-
-    @Test
-    void loginByGithubSetsNullGithubIdWhenUuidIsNotNumeric() {
-        // GitHub UUID 非纯数字（极罕见，但代码中有 try-catch 处理）
+    void nonNumericGithubUuidGivesNullGithubIdInPending() {
         AuthUser ghUser = githubUser("not-a-number", "Nick", null, null);
-
         when(userCenterService.findByUsername("github_not-a-number")).thenReturn(Optional.empty());
-        when(passwordService.hash(any())).thenReturn("hash");
-        when(userCenterService.createUser(any())).thenAnswer(inv -> {
-            UserAccount arg = inv.getArgument(0);
-            // UUID 无法解析为数字时，githubId 应为 null
-            assertThat(arg.githubId()).isNull();
-            return enabledUser(10L, "github_not-a-number", "hash");
-        });
 
-        try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
-            stpUtil.when(StpUtil::getTokenName).thenReturn("satoken");
-            stpUtil.when(StpUtil::getTokenValue).thenReturn("token");
-            authService.loginByGithub(ghUser);
-        }
+        assertThat(expectRegistration("github", ghUser).githubId()).isNull();
     }
 
     @Test
-    void loginByGithubUsesUsernameAsFallbackWhenNicknameIsNull() {
-        // GitHub 用户昵称为 null 时，回退使用 username 字段作为 displayName
+    void pendingDisplayNameFallsBackToLoginWhenNicknameIsNull() {
         AuthUser ghUser = githubUser("12345", null, null, null);
-
         when(userCenterService.findByUsername("github_12345")).thenReturn(Optional.empty());
-        when(passwordService.hash(any())).thenReturn("hash");
-        when(userCenterService.createUser(any())).thenAnswer(inv -> {
-            UserAccount arg = inv.getArgument(0);
-            // displayName 应来自 getUsername()，即 "github-login-12345"
-            assertThat(arg.displayName()).isEqualTo("github-login-12345");
-            return enabledUser(10L, "github_12345", "hash");
-        });
 
-        try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
-            stpUtil.when(StpUtil::getTokenName).thenReturn("satoken");
-            stpUtil.when(StpUtil::getTokenValue).thenReturn("token");
-            authService.loginByGithub(ghUser);
-        }
+        assertThat(expectRegistration("github", ghUser).displayName()).isEqualTo("github-login-12345");
     }
 
     @Test
@@ -360,7 +324,7 @@ class AuthServiceTests {
             stpUtil.when(StpUtil::getTokenName).thenReturn("satoken");
             stpUtil.when(StpUtil::getTokenValue).thenReturn("token-xyz");
 
-            LoginResponse response = authService.loginByGithub(ghUser);
+            LoginResponse response = loginAs("github", ghUser);
 
             // 已有用户应走 updateProfile 而非 createUser
             verify(userCenterService).updateProfile(10L, "UpdatedNick", "https://new-avatar.url", "new@github.com", 12345L);
@@ -379,49 +343,9 @@ class AuthServiceTests {
         when(userCenterService.updateProfile(any(), any(), any(), any(), any()))
                 .thenReturn(disabledAccount);
 
-        assertThatThrownBy(() -> authService.loginByGithub(ghUser))
+        assertThatThrownBy(() -> loginAs("github", ghUser))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage("账号已被禁用");
-    }
-
-    @Test
-    void loginByGithubThrowsWhenNewlyRegisteredAccountIsDisabled() {
-        // 理论上不会发生（新注册账号默认启用），但防御性测试
-        AuthUser ghUser = githubUser("12345", "Nick", null, null);
-
-        UserAccount disabledAccount = disabledUser(10L, "github_12345");
-        when(userCenterService.findByUsername("github_12345")).thenReturn(Optional.empty());
-        when(passwordService.hash(any())).thenReturn("hash");
-        when(userCenterService.createUser(any())).thenReturn(disabledAccount);
-
-        assertThatThrownBy(() -> authService.loginByGithub(ghUser))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessage("账号已被禁用");
-    }
-
-    // =============================================
-    // loginByProvider() - identity 双写（M1）
-    // =============================================
-
-    @Test
-    void newUserGetsIdentityInserted() {
-        AuthUser ghUser = githubUser("12345", "Nick", null, null);
-        when(userCenterService.findByUsername("github_12345")).thenReturn(Optional.empty());
-        when(passwordService.hash(any())).thenReturn("hash");
-        when(userCenterService.createUser(any())).thenReturn(enabledUser(10L, "github_12345", "hash"));
-
-        try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
-            stpUtil.when(StpUtil::getTokenName).thenReturn("satoken");
-            stpUtil.when(StpUtil::getTokenValue).thenReturn("token");
-            authService.loginByGithub(ghUser);
-        }
-
-        org.mockito.ArgumentCaptor<com.involutionhell.backend.usercenter.model.UserIdentity> cap =
-                org.mockito.ArgumentCaptor.forClass(com.involutionhell.backend.usercenter.model.UserIdentity.class);
-        verify(userIdentityRepository).insert(cap.capture());
-        assertThat(cap.getValue().userId()).isEqualTo(10L);
-        assertThat(cap.getValue().provider()).isEqualTo("github");
-        assertThat(cap.getValue().providerUserId()).isEqualTo("12345");
     }
 
     @Test
@@ -437,7 +361,7 @@ class AuthServiceTests {
         try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
             stpUtil.when(StpUtil::getTokenName).thenReturn("satoken");
             stpUtil.when(StpUtil::getTokenValue).thenReturn("token");
-            authService.loginByGithub(ghUser);
+            loginAs("github", ghUser);
         }
 
         // 已有 identity 行：刷新登录时间的同时把本次拿到的邮箱/名字传下去补空
@@ -448,24 +372,19 @@ class AuthServiceTests {
     @Test
     void identityWriteFailureDoesNotBlockLogin() {
         AuthUser ghUser = githubUser("12345", "Nick", null, null);
-        when(userCenterService.findByUsername("github_12345")).thenReturn(Optional.empty());
-        when(passwordService.hash(any())).thenReturn("hash");
-        when(userCenterService.createUser(any())).thenReturn(enabledUser(10L, "github_12345", "hash"));
-        // identity 写入炸掉——不能阻断登录（与 INV-003 lazy upgrade 同策略）
+        // 老账号（M0 回填没覆盖到）：按用户名找到，补身份行时 DB 炸掉——不能阻断登录
+        when(userCenterService.findByUsername("github_12345")).thenReturn(Optional.of(enabledUser(10L, "github_12345", "hash")));
+        when(userCenterService.updateProfile(any(), any(), any(), any(), any())).thenReturn(enabledUser(10L, "github_12345", "hash"));
         org.mockito.Mockito.doThrow(new RuntimeException("simulated identity write failure"))
                 .when(userIdentityRepository).insert(any());
 
         try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
             stpUtil.when(StpUtil::getTokenName).thenReturn("satoken");
             stpUtil.when(StpUtil::getTokenValue).thenReturn("token-xyz");
-            LoginResponse response = authService.loginByGithub(ghUser);
+            LoginResponse response = loginAs("github", ghUser);
             assertThat(response.tokenValue()).isEqualTo("token-xyz");
         }
     }
-
-    // =============================================
-    // loginByProvider() - 已验证邮箱自动关联（防分叉）
-    // =============================================
 
     @Test
     void verifiedEmailAutoLinksToExistingAccountInsteadOfForking() {
@@ -479,7 +398,7 @@ class AuthServiceTests {
         try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
             stpUtil.when(StpUtil::getTokenName).thenReturn("satoken");
             stpUtil.when(StpUtil::getTokenValue).thenReturn("tok");
-            LoginResponse res = authService.loginByProvider("discord", dc);
+            LoginResponse res = loginAs("discord", dc);
             assertThat(res.user().username()).isEqualTo("github_12345"); // 登入的是已有账号
         }
 
@@ -493,56 +412,90 @@ class AuthServiceTests {
     }
 
     @Test
-    void unverifiedEmailDoesNotAutoLinkAndCreatesNewAccount() {
-        // 邮箱未验证 → 绝不按邮箱关联，建新号
+    void unverifiedEmailDoesNotAutoLinkAndStartsRegistration() {
         AuthUser dc = discordUser("snow-2", "alice@example.com", false);
         when(userCenterService.findByUsername("discord_snow-2")).thenReturn(Optional.empty());
-        when(passwordService.hash(any())).thenReturn("hash");
-        when(userCenterService.createUser(any())).thenReturn(enabledUser(20L, "discord_snow-2", "hash"));
 
-        try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
-            stpUtil.when(StpUtil::getTokenName).thenReturn("satoken");
-            stpUtil.when(StpUtil::getTokenValue).thenReturn("tok");
-            authService.loginByProvider("discord", dc);
-        }
-
-        // 未验证：不查邮箱关联，直接建新号
-        verify(userCenterService).createUser(any());
+        // 未验证邮箱只用来预填验证页，绝不拿去查挂靠
+        assertThat(expectRegistration("discord", dc).providerEmail()).isEqualTo("alice@example.com");
         verify(userAccountRepository, org.mockito.Mockito.never()).findByEmail(any());
     }
 
     @Test
-    void verifiedEmailWithNoMatchCreatesNewAccount() {
+    void verifiedEmailWithNoMatchStartsRegistration() {
         AuthUser dc = discordUser("snow-3", "new@example.com", true);
         when(userCenterService.findByUsername("discord_snow-3")).thenReturn(Optional.empty());
         when(userAccountRepository.findByEmail("new@example.com")).thenReturn(java.util.List.of());
-        when(passwordService.hash(any())).thenReturn("hash");
-        when(userCenterService.createUser(any())).thenReturn(enabledUser(30L, "discord_snow-3", "hash"));
 
-        try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
-            stpUtil.when(StpUtil::getTokenName).thenReturn("satoken");
-            stpUtil.when(StpUtil::getTokenValue).thenReturn("tok");
-            authService.loginByProvider("discord", dc);
-        }
-        verify(userCenterService).createUser(any());
+        expectRegistration("discord", dc);
     }
 
     @Test
     void ambiguousEmailMatchDoesNotAutoLink() {
-        // 同邮箱命中多个账号（异常）→ 保守建新号，绝不猜挂
+        // 同邮箱命中多个账号（异常）→ 绝不猜挂，交给注册（验证后会因邮箱已占用而 409）
         AuthUser dc = discordUser("snow-4", "dup@example.com", true);
         when(userCenterService.findByUsername("discord_snow-4")).thenReturn(Optional.empty());
         when(userAccountRepository.findByEmail("dup@example.com"))
                 .thenReturn(java.util.List.of(enabledUser(1L, "a", "h"), enabledUser(2L, "b", "h")));
-        when(passwordService.hash(any())).thenReturn("hash");
-        when(userCenterService.createUser(any())).thenReturn(enabledUser(40L, "discord_snow-4", "hash"));
+
+        expectRegistration("discord", dc);
+    }
+
+    @Test
+    void returningLoginNeverFillsAnUnverifiedEmail() {
+        // 邮箱是自动挂靠的锚点：账号 email 为空时也不能用未验证邮箱补
+        AuthUser dc = discordUser("snow-5", "victim@example.com", false);
+        when(userIdentityRepository.findByProviderAndProviderUserId("discord", "snow-5"))
+                .thenReturn(Optional.of(new com.involutionhell.backend.usercenter.model.UserIdentity(
+                        9L, 10L, "discord", "snow-5", null, null, null, null)));
+        when(userCenterService.updateProfile(any(), any(), any(), any(), any())).thenReturn(enabledUser(10L, "u", "h"));
 
         try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
-            stpUtil.when(StpUtil::getTokenName).thenReturn("satoken");
-            stpUtil.when(StpUtil::getTokenValue).thenReturn("tok");
-            authService.loginByProvider("discord", dc);
+            loginAs("discord", dc);
         }
-        verify(userCenterService).createUser(any());
+        verify(userCenterService).updateProfile(eq(10L), any(), any(), org.mockito.ArgumentMatchers.isNull(), any());
+    }
+
+    @Test
+    void completeRegistrationCreatesAccountWithVerifiedEmailAndIdentity() {
+        var pending = new com.involutionhell.backend.usercenter.model.PendingRegistration(
+                "discord", "snow-6", "Nick", "https://a", "prefill@example.com", null);
+        when(passwordService.hash(any())).thenReturn("hash");
+        when(userCenterService.createUser(any())).thenAnswer(inv -> {
+            UserAccount a = inv.getArgument(0);
+            assertThat(a.username()).isEqualTo("discord_snow-6");
+            assertThat(a.email()).as("写的是本次验证过的邮箱，不是 provider 预填").isEqualTo("real@example.com");
+            assertThat(a.roles()).containsExactly("user");
+            return new UserAccount(60L, a.username(), a.passwordHash(), a.displayName(), true,
+                    a.roles(), a.permissions(), a.avatarUrl(), a.email(), a.githubId(), null);
+        });
+
+        try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
+            stpUtil.when(StpUtil::getTokenValue).thenReturn("tok");
+            assertThat(authService.completeRegistration(
+                    new RegistrationService.VerifiedRegistration(pending, "real@example.com")).tokenValue()).isEqualTo("tok");
+            stpUtil.verify(() -> StpUtil.login(60L));
+        }
+        var cap = org.mockito.ArgumentCaptor.forClass(com.involutionhell.backend.usercenter.model.UserIdentity.class);
+        verify(userIdentityRepository).insert(cap.capture());
+        assertThat(cap.getValue().userId()).isEqualTo(60L);
+        assertThat(cap.getValue().providerUserId()).isEqualTo("snow-6");
+    }
+
+    @Test
+    void completeRegistrationRefusesEmailOfExistingAccountWithoutLinking() {
+        when(userAccountRepository.findByEmail("alice@example.com")).thenReturn(java.util.List.of(enabledUser(2L, "alice", "h")));
+        var pending = new com.involutionhell.backend.usercenter.model.PendingRegistration(
+                "discord", "snow-7", "Nick", null, null, null);
+
+        try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
+            assertThatThrownBy(() -> authService.completeRegistration(
+                    new RegistrationService.VerifiedRegistration(pending, "alice@example.com")))
+                    .isInstanceOf(AuthService.EmailTakenException.class);
+            stpUtil.verifyNoInteractions();
+        }
+        verify(userCenterService, org.mockito.Mockito.never()).createUser(any());
+        verify(userIdentityRepository, org.mockito.Mockito.never()).insert(any());
     }
 
     @Test
@@ -558,7 +511,7 @@ class AuthServiceTests {
         try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
             stpUtil.when(StpUtil::getTokenName).thenReturn("satoken");
             stpUtil.when(StpUtil::getTokenValue).thenReturn("tok");
-            authService.loginByProvider("github", gh);
+            loginAs("github", gh);
         }
 
         verify(userCenterService, org.mockito.Mockito.never()).createUser(any());
@@ -588,7 +541,7 @@ class AuthServiceTests {
         try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
             stpUtil.when(StpUtil::getTokenName).thenReturn("satoken");
             stpUtil.when(StpUtil::getTokenValue).thenReturn("tok");
-            LoginResponse res = authService.loginByProvider("discord", dc);
+            LoginResponse res = loginAs("discord", dc);
 
             stpUtil.verify(() -> StpUtil.login(10L));
             assertThat(res.user().username()).isEqualTo("github_12345");
@@ -608,7 +561,7 @@ class AuthServiceTests {
                 .thenReturn(enabledUser(10L, "github_12345", "hash"));
 
         try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
-            authService.loginByProvider("discord", discordUser(snowflake, null, false));
+            loginAs("discord", discordUser(snowflake, null, false));
         }
         verify(userCenterService).updateProfile(eq(10L), any(), any(), any(),
                 org.mockito.ArgumentMatchers.isNull());
@@ -630,7 +583,7 @@ class AuthServiceTests {
         try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
             stpUtil.when(StpUtil::getTokenName).thenReturn("satoken");
             stpUtil.when(StpUtil::getTokenValue).thenReturn("tok");
-            LoginResponse res = authService.loginByProvider("github", gh);
+            LoginResponse res = loginAs("github", gh);
 
             stpUtil.verify(() -> StpUtil.login(50L));
             assertThat(res.user().username()).isEqualTo("discord_snow-x");
@@ -661,8 +614,8 @@ class AuthServiceTests {
             stpUtil.when(StpUtil::getTokenName).thenReturn("satoken");
             stpUtil.when(StpUtil::getTokenValue).thenReturn("tok");
 
-            authService.loginByProvider("discord", discordUser("snow-c", "alice@example.com", true));
-            authService.loginByProvider("discord", discordUser("snow-c", "alice-new@example.com", true));
+            loginAs("discord", discordUser("snow-c", "alice@example.com", true));
+            loginAs("discord", discordUser("snow-c", "alice-new@example.com", true));
 
             stpUtil.verify(() -> StpUtil.login(10L), org.mockito.Mockito.times(2));
         }

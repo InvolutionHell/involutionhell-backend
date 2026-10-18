@@ -97,18 +97,43 @@ class RegistrationServiceTests {
     }
 
     @Test
-    void resendDoesNotResetAttempts_bruteForceCapped() {
+    void fifthWrongCodeKillsTheSession_noResendAfterLock() {
         String pid = svc.begin(reg("a@e.com"));
-        sendAndCaptureCode(pid, "a@e.com");
-        // 打满 5 次错码
+        String code = sendAndCaptureCode(pid, "a@e.com");
         for (int i = 0; i < 5; i++) {
             assertThat(svc.verifyAndConsume(pid, "a@e.com", "111111")).isEmpty();
         }
-        // 过冷却后重发（新码），但 attempts 不重置
+        // 锁死即作废：正确码也不行，也不能再借这个会话发信（调用方据 getPending 为空提示重新登录）
+        assertThat(svc.verifyAndConsume(pid, "a@e.com", code)).isEmpty();
+        assertThat(svc.getPending(pid)).isEmpty();
         ticker.advance(Duration.ofSeconds(61));
-        String newCode = sendAndCaptureCode(pid, "a@e.com");
-        // 即便拿到正确的新码，也因 attempts 已耗尽而失败——这就是堵住"重发无限爆破"
-        assertThat(svc.verifyAndConsume(pid, "a@e.com", newCode)).isEmpty();
+        assertThat(svc.sendOtp(pid, "a@e.com")).isEqualTo(SendResult.SESSION_EXPIRED);
+    }
+
+    @Test
+    void sendsToOneEmailAreCappedAcrossSessions() {
+        when(email.sendHtml(anyString(), anyString(), anyString())).thenReturn(true);
+        for (int i = 0; i < 5; i++) {
+            // 每个会话 = 一次真实 OAuth；换会话不能绕过按邮箱的日限额
+            String pid = svc.begin(new PendingRegistration("discord", "snow-" + i, "N", null, null, null));
+            assertThat(svc.sendOtp(pid, "Victim@E.com")).isEqualTo(SendResult.SENT);
+        }
+        String sixth = svc.begin(new PendingRegistration("discord", "snow-x", "N", null, null, null));
+        assertThat(svc.sendOtp(sixth, "victim@e.com")).as("大小写不同也算同一邮箱").isEqualTo(SendResult.RATE_LIMITED);
+        assertThat(svc.sendOtp(sixth, "other@e.com")).isEqualTo(SendResult.SENT);
+        ticker.advance(Duration.ofDays(1).plusSeconds(1));
+        String next = svc.begin(new PendingRegistration("discord", "snow-y", "N", null, null, null));
+        assertThat(svc.sendOtp(next, "victim@e.com")).isEqualTo(SendResult.SENT);
+    }
+
+    @Test
+    void sendsFromOneIdentityAreCappedAcrossSessions() {
+        when(email.sendHtml(anyString(), anyString(), anyString())).thenReturn(true);
+        for (int i = 0; i < 10; i++) {
+            String pid = svc.begin(reg(null)); // 同一个 discord snow-1 反复走 OAuth
+            assertThat(svc.sendOtp(pid, "e" + i + "@e.com")).isEqualTo(SendResult.SENT);
+        }
+        assertThat(svc.sendOtp(svc.begin(reg(null)), "e10@e.com")).isEqualTo(SendResult.RATE_LIMITED);
     }
 
     @Test

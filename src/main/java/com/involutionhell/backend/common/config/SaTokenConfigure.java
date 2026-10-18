@@ -19,7 +19,7 @@ public class SaTokenConfigure implements WebMvcConfigurer {
             SaRouter
                 .match("/**")                              // 拦截所有路由
                 .notMatch("/auth/login")                   // 账号密码登录
-                .notMatch("/auth/register")                // 注册
+                .notMatch("/auth/register/*")              // 第三方登录后的邮箱验证注册（凭 httpOnly cookie 里的 pendingId）
                 .notMatch("/oauth/render/*")               // OAuth 授权发起（github / discord / ...，未登录才需要）
                 .notMatch("/api/auth/callback/*")          // OAuth 回调（github 路径与 OAuth App 注册保持一致）
                 .notMatch("/analytics/top-docs")           // 文档热榜公开接口
