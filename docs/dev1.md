@@ -5,7 +5,7 @@
 | 说明 | 路径 |
 |------|------|
 | 后端监听 | `http://localhost:8080` |
-| 发起 GitHub 登录（浏览器直跳） | `http://localhost:8080/oauth/render/github` |
+| 发起登录 | 走前端 `localhost:3000/login` 的按钮（它生成一次性 nonce 带给 `/oauth/render/{provider}?n=`；直接打开 render 地址拿回的 `#token` 会被前端拒收） |
 | GitHub 回调（经 Next.js rewrite 代理） | `localhost:3000/api/auth/callback/github` → `localhost:8080/api/auth/callback/github` |
 | 获取当前用户 | `GET /auth/me`（需 `satoken` header） |
 | 退出登录 | `POST /auth/logout`（需 `satoken` header） |
@@ -89,11 +89,13 @@
 
 ```
 用户点击登录
-  → 前端跳转 /oauth/render/github（后端直接重定向 GitHub）
+  → 前端生成一次性 nonce 存 sessionStorage，跳转 /oauth/render/github?n=<nonce>
+    （后端把 nonce 记进 ih_login_nonce cookie，直接重定向 GitHub）
   → GitHub 回调 /api/auth/callback/github（经 Next.js rewrite 转发给后端）
-  → 后端 JustAuth 解析 AuthUser，查找或创建 user_accounts 记录
+  → 后端 JustAuth 解析 AuthUser：身份命中 / 老账号 / 已验证邮箱挂靠 → 登入；
+    都没命中 → 302 /login/verify 走邮箱 OTP 注册（见 usercenter/README.md）
   → StpUtil.login(userId) 建立 Sa-Token 会话
-  → 后端重定向到前端首页，URL 携带 ?token=xxx
-  → 前端 AuthProvider 读取 token 存入 localStorage，清除 URL 参数
+  → 后端重定向到前端首页，fragment 携带 #token=xxx&n=<nonce>
+  → 前端 AuthProvider 核对 n 与 sessionStorage 里的 nonce，一致才把 token 存入 localStorage，清除 fragment
   → 后续请求通过 x-satoken header 或 satoken header 传递 token
 ```
