@@ -42,8 +42,14 @@ public class AuthProviderRegistry {
                 : Optional.ofNullable(byKey.get(key.toLowerCase(Locale.ROOT)));
     }
 
-    /** 已注册的 provider 名，供前端展示"可绑定的登录方式"。 */
+    /** 已注册的 provider 名。 */
     public java.util.Set<String> keys() {
         return byKey.keySet();
+    }
+
+    /** 已注册且配了凭据的 provider 名，供前端展示"可绑定的登录方式"。 */
+    public java.util.List<String> configuredKeys() {
+        return byKey.values().stream().filter(AuthProvider::isConfigured)
+                .map(p -> p.key().toLowerCase(Locale.ROOT)).sorted().toList();
     }
 }

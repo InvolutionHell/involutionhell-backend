@@ -33,6 +33,9 @@ public class GoogleAuthProvider implements AuthProvider {
 }
 ```
 
+真实例子就是 `oauth/GoogleAuthProvider`。另外覆盖 `isConfigured()`(用 `AuthProviders.isConfigured`),
+没配凭据的 provider 才不会出现在设置页的"连接"列表里。
+
 `AuthProviderRegistry` 会自动收集所有 `AuthProvider` bean,**登录、绑定、邮箱信任判定
 三条路径立刻全部生效**。
 

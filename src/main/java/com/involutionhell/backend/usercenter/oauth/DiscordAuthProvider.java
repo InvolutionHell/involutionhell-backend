@@ -34,6 +34,11 @@ public class DiscordAuthProvider implements AuthProvider {
     }
 
     @Override
+    public boolean isConfigured() {
+        return AuthProviders.isConfigured(clientId, clientSecret);
+    }
+
+    @Override
     public AuthRequest newRequest() {
         AuthProviders.requireConfigured(key(), clientId, clientSecret);
         return new AuthDiscordRequest(AuthConfig.builder()

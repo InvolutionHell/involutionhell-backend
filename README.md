@@ -132,6 +132,18 @@ docker compose up -d postgres
 
 不填后端也不报错，但登录页的 Discord 按钮照样显示，点了会回到 `/login?error=oauth_provider`（`/oauth/render/discord` 判定未配置）。scope 由后端固定为 `identify email`，无需在 Portal 额外设置。
 
+#### （可选）配置 Google 登录
+
+1. [Google Cloud Console](https://console.cloud.google.com/apis/credentials) → **Create credentials → OAuth client ID**，类型选 **Web application**（第一次会要求先配 OAuth consent screen，外部用户、只需 email/profile/openid 三个非敏感 scope）
+2. **Authorized redirect URIs** 加 `http://localhost:3000/api/auth/callback/google`
+3. 把 **Client ID / Client secret** 填到 `.env`：
+   ```
+   AUTH_GOOGLE_ID=...
+   AUTH_GOOGLE_SECRET=...
+   ```
+
+不填时 Google 登录回 `/login?error=oauth_provider`，设置页不出现"连接 Google"。
+
 ### 4. 启动后端服务
 按以下任一方式启动:
 

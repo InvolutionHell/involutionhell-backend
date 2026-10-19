@@ -25,6 +25,11 @@ public interface AuthProvider {
      */
     AuthRequest newRequest();
 
+    /** client-id 与 secret 都配了。没配的 provider 不出现在"可连接"列表里，免得给出点了必失败的按钮。 */
+    default boolean isConfigured() {
+        return true;
+    }
+
     /** 回调地址，仅用于排查日志（公开信息，不含密钥）。 */
     String redirectUri();
 

@@ -52,6 +52,42 @@ class AuthProviderRegistryTests {
     }
 
     @Test
+    void googleTrustsEmailOnlyWhenUserinfoSaysVerified() {
+        var google = new GoogleAuthProvider("id", "secret", "http://cb/google");
+        assertThat(google.key()).isEqualTo("google");
+        assertThat(google.isEmailVerified(withRaw("{\"email\":\"a@b.c\",\"email_verified\":true}"))).isTrue();
+        assertThat(google.isEmailVerified(withRaw("{\"email\":\"a@b.c\",\"email_verified\":false}"))).isFalse();
+        // 缺字段必须按未验证：信错了就是账号接管向量
+        assertThat(google.isEmailVerified(withRaw("{\"email\":\"a@b.c\"}"))).isFalse();
+        assertThat(google.isEmailVerified(AuthUser.builder().build())).isFalse();
+    }
+
+    @Test
+    void googleAuthorizeUrlAsksForEmailScope() {
+        String url = new GoogleAuthProvider("cid", "secret", "https://example.com/api/auth/callback/google")
+                .newRequest().authorize("st");
+        assertThat(url).startsWith("https://accounts.google.com/o/oauth2/v2/auth")
+                .contains("client_id=cid").contains("state=st")
+                .contains("openid").contains("email").contains("profile");
+    }
+
+    @Test
+    void unconfiguredProvidersAreNotOfferedForBinding() {
+        var registry = new AuthProviderRegistry(List.of(
+                new GithubAuthProvider("id", "secret", "http://cb/github"),
+                new GoogleAuthProvider("", "", "http://cb/google"),
+                new DiscordAuthProvider("id", "", "http://cb/discord")));
+        assertThat(registry.keys()).containsExactlyInAnyOrder("github", "google", "discord");
+        assertThat(registry.configuredKeys()).containsExactly("github");
+        assertThatThrownBy(() -> registry.find("google").orElseThrow().newRequest())
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    private static AuthUser withRaw(String json) {
+        return AuthUser.builder().rawUserInfo(com.alibaba.fastjson.JSON.parseObject(json)).build();
+    }
+
+    @Test
     void realProvidersAreRegisteredWithExpectedEmailTrust() {
         var registry = new AuthProviderRegistry(List.of(
                 new GithubAuthProvider("id", "secret", "http://cb/github"),
