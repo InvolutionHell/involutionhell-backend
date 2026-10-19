@@ -44,7 +44,7 @@ public class IdentityController {
     @SaCheckLogin
     @GetMapping("/providers")
     public ApiResponse<List<String>> supportedProviders() {
-        return ApiResponse.ok(providers.keys().stream().sorted().toList());
+        return ApiResponse.ok(providers.configuredKeys());
     }
 
     /** 解绑指定 provider。返回解绑后剩余身份列表。 */
