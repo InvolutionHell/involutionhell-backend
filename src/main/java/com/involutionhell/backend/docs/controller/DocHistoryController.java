@@ -27,13 +27,16 @@ public class DocHistoryController {
     /**
      * 规范化前端传入的文档路径为仓库根相对路径（GitHub API 要求）。
      *
-     * 接受的输入形态：
-     * - "app/docs/ai/..."        仓库根相对，原样返回
-     * - "docs/ai/..."            前面补 "app/"
-     * - "/docs/ai/..."           URL 风格，去开头斜杠再补 "app/"
-     * - "ai/rl/index.mdx"        fumadocs page.file.path 风格，补 "app/docs/"
+     * 文档 2026-05 IA 重组后从 app/docs/ 迁到 content/docs/；GitHub commits?path= 不跟随
+     * 重命名，继续查 app/docs/ 只会拿到迁移前的旧历史。
      *
-     * 拒绝：含 ".."、反斜杠、null 字节；最终不落在 app/docs/ 下一律拒绝，
+     * 接受的输入形态：
+     * - "content/docs/learn/..." 仓库根相对，原样返回
+     * - "docs/learn/..."         前面补 "content/"
+     * - "/docs/learn/..."        URL 风格，去开头斜杠再补 "content/"
+     * - "learn/ai/index.mdx"     fumadocs page.file.path 风格，补 "content/docs/"
+     *
+     * 拒绝：含 ".."、反斜杠、null 字节；最终不落在 content/docs/ 下一律拒绝，
      * 避免服务端 GITHUB_TOKEN 被借来拉仓库内任意文件的 commit。
      */
     static String normalizeDocsPath(String raw) {
@@ -42,10 +45,10 @@ public class DocHistoryController {
 
         String normalized = raw;
         if (normalized.startsWith("/")) normalized = normalized.substring(1);
-        if (normalized.startsWith("docs/")) normalized = "app/" + normalized;
-        // fumadocs page.file.path 返回相对 app/docs/ 的路径，补前缀
-        if (!normalized.startsWith("app/")) normalized = "app/docs/" + normalized;
-        if (!normalized.startsWith("app/docs/")) return null;
+        if (normalized.startsWith("docs/")) normalized = "content/" + normalized;
+        // fumadocs page.file.path 返回相对 content/docs/ 的路径，补前缀
+        if (!normalized.startsWith("content/")) normalized = "content/docs/" + normalized;
+        if (!normalized.startsWith("content/docs/")) return null;
         return normalized;
     }
 
@@ -57,7 +60,7 @@ public class DocHistoryController {
     public ApiResponse<List<DocHistoryItemDto>> getHistory(@RequestParam("path") String rawPath) {
         String path = normalizeDocsPath(rawPath);
         if (path == null) {
-            return new ApiResponse<>(false, "缺少合法的 path 参数（仅允许 app/docs/ 路径）", null);
+            return new ApiResponse<>(false, "缺少合法的 path 参数（仅允许 content/docs/ 路径）", null);
         }
         List<DocHistoryItemDto> items = docHistoryService.getHistory(path);
         return ApiResponse.ok(items);
