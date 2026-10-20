@@ -1,19 +1,23 @@
 package com.involutionhell.backend.community.job;
 
+import com.involutionhell.backend.common.security.PrivateAddressGuard;
 import com.involutionhell.backend.community.model.SharedLinkStatus;
 import com.involutionhell.backend.community.repository.SharedLinkRepository;
 import com.involutionhell.backend.community.repository.SharedLinkRepository.ProbeTarget;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * M9 - 社区分享链接失效探活定时任务。
@@ -46,18 +50,29 @@ public class SharedLinkArchiveJob {
     /** 连续失败达到此次数 → 标记 ARCHIVED。 */
     private static final int ARCHIVE_THRESHOLD = 2;
 
+    /** 手动跟随跳转的上限，和 JDK Redirect.NORMAL 的默认 5 跳一致。 */
+    private static final int MAX_REDIRECTS = 5;
+
     /** 归档原因常量。 */
     private static final String ARCHIVED_REASON_LINK_DEAD = "link_dead";
 
     private final SharedLinkRepository linkRepo;
     private final HttpClient httpClient;
 
+    /** 另有测试用 package-private ctor，必须显式 @Autowired，否则 Spring 不会自动选。 */
+    @Autowired
     public SharedLinkArchiveJob(SharedLinkRepository linkRepo) {
-        this.linkRepo = linkRepo;
-        this.httpClient = HttpClient.newBuilder()
+        // NEVER：跳转由 isAlive 手动跟随，每跳都过 SSRF 守卫
+        this(linkRepo, HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
-                .followRedirects(HttpClient.Redirect.NORMAL)
-                .build();
+                .followRedirects(HttpClient.Redirect.NEVER)
+                .build());
+    }
+
+    /** 测试注入用。 */
+    SharedLinkArchiveJob(SharedLinkRepository linkRepo, HttpClient httpClient) {
+        this.linkRepo = linkRepo;
+        this.httpClient = httpClient;
     }
 
     /**
@@ -81,7 +96,7 @@ public class SharedLinkArchiveJob {
 
         for (ProbeTarget target : batch) {
             try {
-                boolean alive = headIsAlive(target.url());
+                boolean alive = isAlive(target.url());
                 if (alive) {
                     linkRepo.resetProbeFail(target.id());
                     okCount++;
@@ -121,43 +136,55 @@ public class SharedLinkArchiveJob {
     /**
      * 发 HEAD 请求判断链接是否存活。
      * 微信公众号不支持 HEAD 会返回 405，降级成 GET 不读 body。
+     *
+     * SSRF：和 {@link com.involutionhell.backend.community.service.OgFetchService} 同一套防御——
+     * 不让 HttpClient 自己跟随跳转，每一跳（含 302 目标）都先过 {@link PrivateAddressGuard}。
+     * 投稿时验过的公网 URL 之后可能被改成 302 → 169.254.169.254，或 DNS 改指内网；
+     * 命中内网 / DNS 失败一律按"失效"算。DNS rebinding 残留窗口同 OgFetchService 注释。
      */
-    private boolean headIsAlive(String url) {
+    boolean isAlive(String url) {
         try {
             URI uri = URI.create(url);
-            HttpRequest head = HttpRequest.newBuilder(uri)
-                    .method("HEAD", HttpRequest.BodyPublishers.noBody())
-                    .header("User-Agent",
-                            "Mozilla/5.0 (compatible; InvolutionHellBot/1.0)")
-                    .timeout(Duration.ofSeconds(15))
-                    .build();
-            HttpResponse<Void> resp = httpClient.send(head,
-                    HttpResponse.BodyHandlers.discarding());
-            int sc = resp.statusCode();
-            if (sc == 405 || sc == 501) {
-                // 某些站点不支持 HEAD，退回到 GET（只读状态码不消费 body）
-                return getIsAlive(uri);
+            for (int hop = 0; hop <= MAX_REDIRECTS; hop++) {
+                String scheme = uri.getScheme();
+                if (!"http".equalsIgnoreCase(scheme) && !"https".equalsIgnoreCase(scheme)) {
+                    return false;
+                }
+                if (PrivateAddressGuard.isBlockedHost(uri.getHost())) {
+                    log.warn("archive-job: blocked internal/unresolvable host url={}", uri);
+                    return false;
+                }
+                HttpResponse<Void> resp = send(uri, "HEAD");
+                if (resp.statusCode() == 405 || resp.statusCode() == 501) {
+                    // 某些站点不支持 HEAD，退回到 GET（只读状态码不消费 body）
+                    resp = send(uri, "GET");
+                }
+                int sc = resp.statusCode();
+                if (sc >= 300 && sc < 400) {
+                    Optional<String> location = resp.headers().firstValue("Location");
+                    if (location.isEmpty() || location.get().isBlank()) {
+                        return true; // 3xx 无 Location：站点还活着，沿用旧判定
+                    }
+                    uri = uri.resolve(location.get().trim());
+                    continue;
+                }
+                return sc >= 200 && sc < 300;
             }
-            return sc >= 200 && sc < 400;
+            return false; // 跳转超过上限
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
         } catch (Exception e) {
             return false;
         }
     }
 
-    private boolean getIsAlive(URI uri) {
-        try {
-            HttpRequest get = HttpRequest.newBuilder(uri)
-                    .GET()
-                    .header("User-Agent",
-                            "Mozilla/5.0 (compatible; InvolutionHellBot/1.0)")
-                    .timeout(Duration.ofSeconds(15))
-                    .build();
-            HttpResponse<Void> resp = httpClient.send(get,
-                    HttpResponse.BodyHandlers.discarding());
-            int sc = resp.statusCode();
-            return sc >= 200 && sc < 400;
-        } catch (Exception e) {
-            return false;
-        }
+    private HttpResponse<Void> send(URI uri, String method) throws IOException, InterruptedException {
+        HttpRequest request = HttpRequest.newBuilder(uri)
+                .method(method, HttpRequest.BodyPublishers.noBody())
+                .header("User-Agent", "Mozilla/5.0 (compatible; InvolutionHellBot/1.0)")
+                .timeout(Duration.ofSeconds(15))
+                .build();
+        return httpClient.send(request, HttpResponse.BodyHandlers.discarding());
     }
 }
