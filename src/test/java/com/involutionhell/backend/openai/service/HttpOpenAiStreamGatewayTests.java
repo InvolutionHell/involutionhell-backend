@@ -6,7 +6,6 @@ import com.involutionhell.backend.openai.config.OpenAiProperties;
 import com.involutionhell.backend.openai.dto.OpenAiStreamRequest;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
-import java.io.IOException;
 import java.io.InputStream;
 import java.net.Authenticator;
 import java.net.CookieHandler;
