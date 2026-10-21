@@ -51,9 +51,9 @@ public class DocHistoryService {
 
     /**
      * 按仓库相对路径拉最近 5 条 commit。
-     * path 需由调用方规范化好（已保证落在 app/docs/ 下）。
+     * path 需由调用方规范化好（已保证落在 content/docs/ 下）。
      *
-     * @param path 仓库根相对路径，例如 "app/docs/ai/rl/index.mdx"
+     * @param path 仓库根相对路径，例如 "content/docs/learn/ai/index.mdx"
      * @return 最多 5 条 commit，按时间降序；调用失败返回空列表
      */
     @Cacheable(value = "docHistory", key = "#path", unless = "#result.isEmpty()")

@@ -27,17 +27,6 @@ public class OpenAiStreamService {
      * 开启上游请求并把结果实时桥接至指定的 HTTP 响应输出流。
      */
     public void streamToOutputStream(OpenAiStreamRequest request, OutputStream outputStream) {
-        /*
-         * ============================
-         * 🗑️ 旧版本 SseEmitter 打包人逻辑（直接导致 Vercel 不认字）：
-         * public SseEmitter stream(OpenAiStreamRequest request) { ...
-         * SseEmitter emitter = new SseEmitter(0L);
-         * OpenAiEventSink sink = new SseEmitterOpenAiEventSink(emitter);
-         * ... 开启 VirtualThread 扔到后台去 dispatchEvent()
-         * return emitter;
-         * ============================
-         */
-
         gateway.validateConfiguration(request);
         try (InputStream inputStream = gateway.openStream(request)) {
             relayEvents(inputStream, outputStream);
@@ -51,16 +40,6 @@ public class OpenAiStreamService {
      * 该方法提取有价值的短文本切片，将其打包为 Vercel 能识别的前置格式。
      */
     void relayEvents(InputStream inputStream, OutputStream outputStream) throws IOException {
-        /*
-         * ============================
-         * 🗑️ 旧版纯粹转发、不对核心做精洗的代码路线：
-         * String currentEventName = null;
-         * StringBuilder currentData = new StringBuilder();
-         * while ((line = reader.readLine()) != null) { ... 只要遇到 data 就全部原样拼接通过
-         * EventEmitter 发送 ... }
-         * ============================
-         */
-
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, StandardCharsets.UTF_8))) {
             String line;
             while ((line = reader.readLine()) != null) {
